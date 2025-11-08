@@ -1,0 +1,26 @@
+[Unit]
+Description=Tapo Energy Monitor to InfluxDB Logger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_GROUPNAME
+WorkingDirectory=/path/to/tapo-influx-logger
+ExecStart=/path/to/tapo-influx-logger/tapo-logger
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/path/to/tapo-influx-logger
+
+[Install]
+WantedBy=multi-user.target
+

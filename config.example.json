@@ -1,0 +1,14 @@
+{
+  "tapo_email": "your-tapo-account@example.com",
+  "tapo_password": "your-tapo-password",
+  "plug_ips": [],
+  "auto_discover": true,
+  "discovery_method": "both",
+  "scan_subnet": "192.168.1.0/24",
+  "influx_url": "http://localhost:8086",
+  "influx_token": "your-influxdb-token",
+  "influx_org": "your-org",
+  "influx_bucket": "tapo_energy",
+  "poll_interval_seconds": 60
+}
+
