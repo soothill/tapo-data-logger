@@ -109,4 +109,3 @@ func discoverBoth(subnet string, timeout time.Duration) ([]string, error) {
 	fmt.Printf("mDNS found %d plug(s)\n", len(plugs))
 	return plugs, nil
 }
-
