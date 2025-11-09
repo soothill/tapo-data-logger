@@ -528,7 +528,7 @@ func TestInfluxPointCreation(t *testing.T) {
 	}
 
 	// Create InfluxDB point
-	point := createInfluxPoint("192.168.1.100", energy)
+	point := createInfluxPoint("192.168.1.100", energy, nil)
 
 	// Verify point was created
 	if point == nil {

@@ -59,6 +59,15 @@
   "alerts_enabled": false,
   "alert_after_failures": 3,
 
+  "_comment_mqtt": "MQTT publishing configuration",
+  "mqtt_enabled": false,
+  "mqtt_broker": "tcp://localhost:1883",
+  "mqtt_username": "",
+  "mqtt_password": "",
+  "mqtt_client_id": "",
+  "mqtt_topic_prefix": "tapo",
+  "mqtt_qos": 0,
+
   "_comment_descriptions": {
     "batch_write_size": "Number of data points to batch before writing to InfluxDB (default: 100)",
     "batch_write_interval": "Maximum seconds to wait before flushing batch (default: 10)",
@@ -72,6 +81,13 @@
     "influx_idle_conn_timeout": "Idle connection timeout in seconds (default: 90, 0 = 90s)",
     "slack_webhook_url": "Slack webhook URL for device offline alerts",
     "alerts_enabled": "Enable Slack alerts for device failures",
-    "alert_after_failures": "Number of consecutive failures before sending alert"
+    "alert_after_failures": "Number of consecutive failures before sending alert",
+    "mqtt_enabled": "Enable MQTT publishing (default: false)",
+    "mqtt_broker": "MQTT broker URL (e.g., tcp://localhost:1883 or ssl://broker.example.com:8883)",
+    "mqtt_username": "MQTT username (optional)",
+    "mqtt_password": "MQTT password (optional)",
+    "mqtt_client_id": "MQTT client ID (optional, auto-generated if empty)",
+    "mqtt_topic_prefix": "MQTT topic prefix (default: 'tapo'). Topics: {prefix}/{device}/energy, {prefix}/{device}/power, etc.",
+    "mqtt_qos": "MQTT QoS level: 0 (at most once), 1 (at least once), 2 (exactly once)"
   }
 }
