@@ -807,3 +807,400 @@ func TestSendSlackNotificationFormat(t *testing.T) {
 		})
 	}
 }
+
+// TestLogger tests the Logger functionality
+func TestLogger(t *testing.T) {
+	tests := []struct {
+		name  string
+		level string
+	}{
+		{"debug level", "debug"},
+		{"info level", "info"},
+		{"warn level", "warn"},
+		{"error level", "error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := NewLogger(tt.level)
+			if log == nil {
+				t.Fatal("NewLogger returned nil")
+			}
+
+			// Test all log methods
+			log.Debug("debug message")
+			log.Info("info message")
+			log.Warn("warn message")
+			log.Error("error message")
+		})
+	}
+}
+
+// TestDeviceCache tests the DeviceCache functionality
+func TestDeviceCache(t *testing.T) {
+	cache := NewDeviceCache(5 * time.Minute)
+	if cache == nil {
+		t.Fatal("NewDeviceCache returned nil")
+	}
+
+	ip := "192.168.1.100"
+
+	// Test Get on non-existent key
+	data, exists := cache.Get(ip)
+	if exists {
+		t.Errorf("Get on non-existent key should return false, got true")
+	}
+	if data != nil {
+		t.Errorf("Get on non-existent key should return nil data, got %v", data)
+	}
+
+	// Test Set
+	energyData := &EnergyUsageResponse{
+		ErrorCode: 0,
+	}
+	energyData.Result.CurrentPower = 5000
+	energyData.Result.TodayEnergy = 2500
+	energyData.Result.MonthEnergy = 75000
+	cache.Set(ip, energyData)
+
+	// Test Get on existing key
+	retrieved, exists := cache.Get(ip)
+	if !exists {
+		t.Fatal("Get on existing key returned false")
+	}
+	if retrieved == nil {
+		t.Fatal("Get on existing key returned nil data")
+	}
+
+	if retrieved.Result.CurrentPower != 5000 {
+		t.Errorf("Retrieved CurrentPower = %d, want 5000", retrieved.Result.CurrentPower)
+	}
+}
+
+// TestDeviceCacheExpiry tests cache expiration
+func TestDeviceCacheExpiry(t *testing.T) {
+	cache := NewDeviceCache(100 * time.Millisecond)
+
+	ip := "192.168.1.100"
+	energyData := &EnergyUsageResponse{
+		ErrorCode: 0,
+	}
+	energyData.Result.CurrentPower = 5000
+	cache.Set(ip, energyData)
+
+	// Should exist immediately
+	_, exists := cache.Get(ip)
+	if !exists {
+		t.Error("Data should exist immediately after set")
+	}
+
+	// Wait for expiry
+	time.Sleep(150 * time.Millisecond)
+
+	// Should be expired
+	_, exists = cache.Get(ip)
+	if exists {
+		t.Error("Data should be expired after TTL")
+	}
+}
+
+// TestPointBuffer tests the PointBuffer functionality
+// Note: PointBuffer requires InfluxDBManager instances, so we test creation only
+func TestPointBuffer(t *testing.T) {
+	// Test with empty managers list
+	buffer := NewPointBuffer(100, 5*time.Second, []*InfluxDBManager{})
+	if buffer == nil {
+		t.Fatal("NewPointBuffer returned nil")
+	}
+
+	// Flush should not panic with empty managers
+	buffer.Flush()
+}
+
+// TestRateLimiter tests the RateLimiter functionality
+func TestRateLimiter(t *testing.T) {
+	limiter := NewRateLimiter(2)
+	if limiter == nil {
+		t.Fatal("NewRateLimiter returned nil")
+	}
+
+	// Acquire should not panic
+	limiter.Acquire()
+	limiter.Acquire()
+
+	// Release should not panic
+	limiter.Release()
+	limiter.Release()
+}
+
+// TestRateLimiterNil tests rate limiter with no limit
+func TestRateLimiterNil(t *testing.T) {
+	limiter := NewRateLimiter(0)
+	if limiter != nil {
+		t.Error("NewRateLimiter(0) should return nil")
+	}
+
+	limiter = NewRateLimiter(-1)
+	if limiter != nil {
+		t.Error("NewRateLimiter(-1) should return nil")
+	}
+}
+
+// TestCreateInfluxPoint tests InfluxDB point creation
+func TestCreateInfluxPoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       string
+		energy   *EnergyUsageResponse
+		metadata *DeviceMetadata
+	}{
+		{
+			name: "basic point with metadata",
+			ip:   "192.168.1.100",
+			energy: &EnergyUsageResponse{
+				ErrorCode: 0,
+			},
+			metadata: &DeviceMetadata{
+				Name:     "Living Room",
+				Model:    "P110",
+				DeviceID: "device-123",
+			},
+		},
+		{
+			name: "point without metadata",
+			ip:   "10.0.0.1",
+			energy: &EnergyUsageResponse{
+				ErrorCode: 0,
+			},
+			metadata: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set energy values
+			tt.energy.Result.CurrentPower = 5000
+			tt.energy.Result.TodayEnergy = 2500
+			tt.energy.Result.MonthEnergy = 75000
+			tt.energy.Result.TodayRuntime = 180
+			tt.energy.Result.MonthRuntime = 5400
+
+			point := createInfluxPoint(tt.ip, tt.energy, tt.metadata)
+
+			if point == nil {
+				t.Fatal("createInfluxPoint returned nil")
+			}
+
+			// Point should have been created successfully
+			// In a real test with InfluxDB client, we'd verify the fields
+		})
+	}
+}
+
+// TestValidateConfigComprehensive tests ValidateConfig with more scenarios
+func TestValidateConfigComprehensive(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "missing tapo email",
+			config: Config{
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+			},
+			wantErr: true,
+			errMsg:  "tapo_email",
+		},
+		{
+			name: "missing tapo password",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+			},
+			wantErr: true,
+			errMsg:  "tapo_password",
+		},
+		{
+			name: "missing influx url",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+			},
+			wantErr: true,
+			errMsg:  "influx_url",
+		},
+		{
+			name: "missing influx token",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+			},
+			wantErr: true,
+			errMsg:  "influx_token",
+		},
+		{
+			name: "missing influx org",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxBucket: "bucket",
+			},
+			wantErr: true,
+			errMsg:  "influx_org",
+		},
+		{
+			name: "missing influx bucket",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+			},
+			wantErr: true,
+			errMsg:  "influx_bucket",
+		},
+		{
+			name: "no device sources",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+				AutoDiscover: false,
+				PlugIPs:      []string{},
+			},
+			wantErr: true,
+			errMsg:  "auto_discover",
+		},
+		{
+			name: "valid with autodiscover",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+				AutoDiscover: true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with plug IPs",
+			config: Config{
+				TapoEmail:    "test@example.com",
+				TapoPassword: "password",
+				InfluxURL:    "http://localhost:8086",
+				InfluxToken:  "token",
+				InfluxOrg:    "org",
+				InfluxBucket: "bucket",
+				PlugIPs:      []string{"192.168.1.100"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(&tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !contains(err.Error(), tt.errMsg) {
+					t.Errorf("ValidateConfig() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestIsTapoDevice tests the isTapoDevice function
+func TestIsTapoDevice(t *testing.T) {
+	// Start a mock server
+	mock := NewMockTapoDevice()
+	defer mock.Close()
+
+	// Test with valid Tapo device
+	if !isTapoDevice(mock.GetIP(), 2*time.Second) {
+		t.Error("isTapoDevice should return true for mock Tapo device")
+	}
+
+	// Test with invalid IP
+	if isTapoDevice("192.0.2.1", 1*time.Second) {
+		t.Error("isTapoDevice should return false for non-existent device")
+	}
+}
+
+// TestRetryWithBackoff tests the retry mechanism
+func TestRetryWithBackoff(t *testing.T) {
+	setupTest()
+	client := NewTapoClient("192.168.1.100", "test@example.com", "password", 5*time.Second, 3)
+
+	// Test successful operation after retries
+	attempts := 0
+	err := client.retryWithBackoff(context.Background(), func() error {
+		attempts++
+		if attempts < 2 {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}, "test operation")
+
+	if err != nil {
+		t.Errorf("retryWithBackoff should succeed, got error: %v", err)
+	}
+
+	if attempts != 2 {
+		t.Errorf("Expected 2 attempts, got %d", attempts)
+	}
+
+	// Test operation that always fails
+	attempts = 0
+	err = client.retryWithBackoff(context.Background(), func() error {
+		attempts++
+		return context.DeadlineExceeded
+	}, "failing operation")
+
+	if err == nil {
+		t.Error("retryWithBackoff should fail after max retries")
+	}
+
+	if attempts != 4 {
+		t.Errorf("Expected 4 attempts (1 initial + 3 retries), got %d", attempts)
+	}
+
+	// Test context cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = client.retryWithBackoff(ctx, func() error {
+		return context.DeadlineExceeded
+	}, "cancelled operation")
+
+	if err != context.Canceled {
+		t.Errorf("retryWithBackoff should return context.Canceled, got %v", err)
+	}
+}
