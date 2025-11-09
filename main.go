@@ -29,23 +29,38 @@ import (
 	"github.com/grandcat/zeroconf"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/api/write"
 )
 
 type Config struct {
-	TapoEmail       string   `json:"tapo_email"`
-	TapoPassword    string   `json:"tapo_password"`
-	PlugIPs         []string `json:"plug_ips"`
-	AutoDiscover    bool     `json:"auto_discover"`
-	DiscoveryMethod string   `json:"discovery_method"` // "mdns", "scan", or "both"
-	ScanSubnet      string   `json:"scan_subnet"`      // e.g., "192.168.1.0/24"
-	InfluxURL       string   `json:"influx_url"`
-	InfluxToken     string   `json:"influx_token"`
-	InfluxOrg       string   `json:"influx_org"`
-	InfluxBucket    string   `json:"influx_bucket"`
-	PollInterval    int      `json:"poll_interval_seconds"`
-	LogLevel        string   `json:"log_level"`        // "debug", "info", "warn", "error"
-	RequestTimeout  int      `json:"request_timeout_seconds"`
-	MaxRetries      int      `json:"max_retries"`
+	TapoEmail          string                    `json:"tapo_email"`
+	TapoPassword       string                    `json:"tapo_password"`
+	PlugIPs            []string                  `json:"plug_ips"`
+	AutoDiscover       bool                      `json:"auto_discover"`
+	DiscoveryMethod    string                    `json:"discovery_method"` // "mdns", "scan", or "both"
+	ScanSubnet         string                    `json:"scan_subnet"`      // e.g., "192.168.1.0/24"
+	InfluxURL          string                    `json:"influx_url"`
+	InfluxURLs         []InfluxDBInstance        `json:"influx_urls"`      // Multiple InfluxDB instances for HA
+	InfluxToken        string                    `json:"influx_token"`
+	InfluxOrg          string                    `json:"influx_org"`
+	InfluxBucket       string                    `json:"influx_bucket"`
+	PollInterval       int                       `json:"poll_interval_seconds"`
+	DevicePollInterval map[string]int            `json:"device_poll_intervals"` // Device-specific intervals (IP -> seconds)
+	LogLevel           string                    `json:"log_level"`             // "debug", "info", "warn", "error"
+	RequestTimeout     int                       `json:"request_timeout_seconds"`
+	MaxRetries         int                       `json:"max_retries"`
+	BatchWriteSize     int                       `json:"batch_write_size"`     // Number of points to batch before writing
+	BatchWriteInterval int                       `json:"batch_write_interval"` // Max seconds to wait before flushing batch
+	MaxConcurrent      int                       `json:"max_concurrent"`       // Max concurrent device requests (0 = unlimited)
+	CacheTTL           int                       `json:"cache_ttl_seconds"`    // Device state cache TTL in seconds (0 = disabled)
+}
+
+type InfluxDBInstance struct {
+	URL      string `json:"url"`
+	Token    string `json:"token"`
+	Org      string `json:"org"`
+	Bucket   string `json:"bucket"`
+	Priority int    `json:"priority"` // Lower number = higher priority
 }
 
 // LogLevel constants
@@ -123,18 +138,43 @@ func ValidateConfig(config *Config) error {
 	if config.TapoPassword == "" {
 		return fmt.Errorf("tapo_password is required")
 	}
-	if config.InfluxURL == "" {
-		return fmt.Errorf("influx_url is required")
+
+	// Support either single InfluxDB or multiple instances
+	if config.InfluxURL == "" && len(config.InfluxURLs) == 0 {
+		return fmt.Errorf("either influx_url or influx_urls is required")
 	}
-	if config.InfluxToken == "" {
-		return fmt.Errorf("influx_token is required")
+
+	// If using single InfluxDB config, validate it
+	if config.InfluxURL != "" {
+		if config.InfluxToken == "" {
+			return fmt.Errorf("influx_token is required when using influx_url")
+		}
+		if config.InfluxOrg == "" {
+			return fmt.Errorf("influx_org is required when using influx_url")
+		}
+		if config.InfluxBucket == "" {
+			return fmt.Errorf("influx_bucket is required when using influx_url")
+		}
 	}
-	if config.InfluxOrg == "" {
-		return fmt.Errorf("influx_org is required")
+
+	// If using multiple InfluxDB instances, validate them
+	if len(config.InfluxURLs) > 0 {
+		for i, instance := range config.InfluxURLs {
+			if instance.URL == "" {
+				return fmt.Errorf("influx_urls[%d].url is required", i)
+			}
+			if instance.Token == "" {
+				return fmt.Errorf("influx_urls[%d].token is required", i)
+			}
+			if instance.Org == "" {
+				return fmt.Errorf("influx_urls[%d].org is required", i)
+			}
+			if instance.Bucket == "" {
+				return fmt.Errorf("influx_urls[%d].bucket is required", i)
+			}
+		}
 	}
-	if config.InfluxBucket == "" {
-		return fmt.Errorf("influx_bucket is required")
-	}
+
 	if config.PollInterval <= 0 {
 		config.PollInterval = 60 // Default to 60 seconds
 	}
@@ -146,6 +186,18 @@ func ValidateConfig(config *Config) error {
 	}
 	if config.MaxRetries < 0 {
 		config.MaxRetries = 3 // Default to 3 retries
+	}
+	if config.BatchWriteSize <= 0 {
+		config.BatchWriteSize = 100 // Default batch size
+	}
+	if config.BatchWriteInterval <= 0 {
+		config.BatchWriteInterval = 10 // Default 10 seconds
+	}
+	if config.MaxConcurrent < 0 {
+		config.MaxConcurrent = 0 // Default unlimited
+	}
+	if config.CacheTTL < 0 {
+		config.CacheTTL = 0 // Default disabled
 	}
 	if config.AutoDiscover {
 		if config.DiscoveryMethod == "" {
@@ -202,6 +254,215 @@ type EnergyUsageResponse struct {
 		TodayRuntime int `json:"today_runtime"` // in minutes
 		MonthRuntime int `json:"month_runtime"` // in minutes
 	} `json:"result"`
+}
+
+// DeviceCache stores cached device state
+type DeviceCache struct {
+	mu    sync.RWMutex
+	cache map[string]*CachedEnergyData
+	ttl   time.Duration
+}
+
+type CachedEnergyData struct {
+	Data      *EnergyUsageResponse
+	Timestamp time.Time
+}
+
+func NewDeviceCache(ttl time.Duration) *DeviceCache {
+	return &DeviceCache{
+		cache: make(map[string]*CachedEnergyData),
+		ttl:   ttl,
+	}
+}
+
+func (dc *DeviceCache) Get(ip string) (*EnergyUsageResponse, bool) {
+	dc.mu.RLock()
+	defer dc.mu.RUnlock()
+
+	cached, exists := dc.cache[ip]
+	if !exists {
+		return nil, false
+	}
+
+	// Check if expired
+	if time.Since(cached.Timestamp) > dc.ttl {
+		return nil, false
+	}
+
+	return cached.Data, true
+}
+
+func (dc *DeviceCache) Set(ip string, data *EnergyUsageResponse) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	dc.cache[ip] = &CachedEnergyData{
+		Data:      data,
+		Timestamp: time.Now(),
+	}
+}
+
+// PointBuffer manages buffered writes to InfluxDB
+type PointBuffer struct {
+	mu             sync.Mutex
+	points         []*write.Point
+	maxSize        int
+	flushInterval  time.Duration
+	lastFlush      time.Time
+	influxManagers []*InfluxDBManager
+}
+
+func NewPointBuffer(maxSize int, flushInterval time.Duration, managers []*InfluxDBManager) *PointBuffer {
+	return &PointBuffer{
+		points:         make([]*write.Point, 0, maxSize),
+		maxSize:        maxSize,
+		flushInterval:  flushInterval,
+		lastFlush:      time.Now(),
+		influxManagers: managers,
+	}
+}
+
+func (pb *PointBuffer) Add(point *write.Point) error {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+	pb.points = append(pb.points, point)
+
+	// Flush if buffer is full or interval has elapsed
+	if len(pb.points) >= pb.maxSize || time.Since(pb.lastFlush) >= pb.flushInterval {
+		return pb.flushLocked()
+	}
+
+	return nil
+}
+
+func (pb *PointBuffer) Flush() error {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	return pb.flushLocked()
+}
+
+func (pb *PointBuffer) flushLocked() error {
+	if len(pb.points) == 0 {
+		return nil
+	}
+
+	logger.Debug("Flushing %d points to InfluxDB", len(pb.points))
+
+	// Try to write to InfluxDB instances with failover
+	var lastErr error
+	for _, manager := range pb.influxManagers {
+		if err := manager.WritePoints(pb.points); err != nil {
+			logger.Warn("Failed to write to InfluxDB %s: %v", manager.instance.URL, err)
+			lastErr = err
+			continue
+		}
+
+		// Success - clear buffer and return
+		pb.points = pb.points[:0]
+		pb.lastFlush = time.Now()
+		return nil
+	}
+
+	// All instances failed
+	if lastErr != nil {
+		return fmt.Errorf("failed to write to all InfluxDB instances: %w", lastErr)
+	}
+
+	return nil
+}
+
+// InfluxDBManager manages connection to a single InfluxDB instance
+type InfluxDBManager struct {
+	client   influxdb2.Client
+	writeAPI api.WriteAPIBlocking
+	instance InfluxDBInstance
+	mu       sync.Mutex
+	healthy  bool
+}
+
+func NewInfluxDBManager(instance InfluxDBInstance) (*InfluxDBManager, error) {
+	client := influxdb2.NewClient(instance.URL, instance.Token)
+	writeAPI := client.WriteAPIBlocking(instance.Org, instance.Bucket)
+
+	return &InfluxDBManager{
+		client:   client,
+		writeAPI: writeAPI,
+		instance: instance,
+		healthy:  true,
+	}, nil
+}
+
+func (im *InfluxDBManager) WritePoints(points []*write.Point) error {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+
+	if !im.healthy {
+		return fmt.Errorf("InfluxDB instance %s is not healthy", im.instance.URL)
+	}
+
+	// Write all points
+	for _, point := range points {
+		if err := im.writeAPI.WritePoint(context.Background(), point); err != nil {
+			im.healthy = false
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (im *InfluxDBManager) CheckHealth(ctx context.Context) error {
+	health, err := im.client.Health(ctx)
+	if err != nil {
+		im.mu.Lock()
+		im.healthy = false
+		im.mu.Unlock()
+		return err
+	}
+
+	im.mu.Lock()
+	im.healthy = health.Status == "pass"
+	im.mu.Unlock()
+
+	if !im.healthy {
+		return fmt.Errorf("health check failed: status=%s", health.Status)
+	}
+
+	return nil
+}
+
+func (im *InfluxDBManager) Close() {
+	im.client.Close()
+}
+
+// RateLimiter manages concurrent device requests
+type RateLimiter struct {
+	sem chan struct{}
+}
+
+func NewRateLimiter(maxConcurrent int) *RateLimiter {
+	if maxConcurrent <= 0 {
+		return nil // No rate limiting
+	}
+
+	return &RateLimiter{
+		sem: make(chan struct{}, maxConcurrent),
+	}
+}
+
+func (rl *RateLimiter) Acquire() {
+	if rl == nil {
+		return
+	}
+	rl.sem <- struct{}{}
+}
+
+func (rl *RateLimiter) Release() {
+	if rl == nil {
+		return
+	}
+	<-rl.sem
 }
 
 func NewTapoClient(ip, email, password string, timeout time.Duration, maxRetries int) *TapoClient {
@@ -780,7 +1041,12 @@ func checkInfluxDBHealth(ctx context.Context, client influxdb2.Client) error {
 }
 
 func writeToInflux(writeAPI api.WriteAPIBlocking, plugIP string, energy *EnergyUsageResponse) error {
-	point := influxdb2.NewPoint(
+	point := createInfluxPoint(plugIP, energy)
+	return writeAPI.WritePoint(nil, point)
+}
+
+func createInfluxPoint(plugIP string, energy *EnergyUsageResponse) *write.Point {
+	return influxdb2.NewPoint(
 		"tapo_energy",
 		map[string]string{
 			"plug_ip": plugIP,
@@ -794,8 +1060,6 @@ func writeToInflux(writeAPI api.WriteAPIBlocking, plugIP string, energy *EnergyU
 		},
 		time.Now(),
 	)
-
-	return writeAPI.WritePoint(nil, point)
 }
 
 func main() {
@@ -829,6 +1093,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Setup wait group for graceful shutdown
+	var wg sync.WaitGroup
+
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -839,18 +1106,117 @@ func main() {
 		cancel()
 	}()
 
-	// Setup InfluxDB client
-	influxClient := influxdb2.NewClient(config.InfluxURL, config.InfluxToken)
-	defer influxClient.Close()
+	// Setup InfluxDB clients (support multiple instances for HA/failover)
+	var influxManagers []*InfluxDBManager
 
-	// Check InfluxDB health
-	logger.Info("Checking InfluxDB connectivity...")
-	if err := checkInfluxDBHealth(ctx, influxClient); err != nil {
-		logger.Error("InfluxDB health check failed: %v", err)
-		log.Fatalf("InfluxDB health check failed: %v", err)
+	// If using single InfluxDB config, convert to instance list
+	if config.InfluxURL != "" {
+		instance := InfluxDBInstance{
+			URL:      config.InfluxURL,
+			Token:    config.InfluxToken,
+			Org:      config.InfluxOrg,
+			Bucket:   config.InfluxBucket,
+			Priority: 0,
+		}
+		manager, err := NewInfluxDBManager(instance)
+		if err != nil {
+			log.Fatalf("Failed to create InfluxDB manager: %v", err)
+		}
+		influxManagers = append(influxManagers, manager)
+	} else if len(config.InfluxURLs) > 0 {
+		// Use multiple InfluxDB instances
+		// Sort by priority (lower number = higher priority)
+		instances := make([]InfluxDBInstance, len(config.InfluxURLs))
+		copy(instances, config.InfluxURLs)
+
+		// Simple bubble sort by priority
+		for i := 0; i < len(instances); i++ {
+			for j := i + 1; j < len(instances); j++ {
+				if instances[j].Priority < instances[i].Priority {
+					instances[i], instances[j] = instances[j], instances[i]
+				}
+			}
+		}
+
+		for _, instance := range instances {
+			manager, err := NewInfluxDBManager(instance)
+			if err != nil {
+				logger.Warn("Failed to create InfluxDB manager for %s: %v", instance.URL, err)
+				continue
+			}
+			influxManagers = append(influxManagers, manager)
+		}
 	}
 
-	writeAPI := influxClient.WriteAPIBlocking(config.InfluxOrg, config.InfluxBucket)
+	if len(influxManagers) == 0 {
+		log.Fatalf("No InfluxDB instances configured")
+	}
+
+	// Check health of all InfluxDB instances
+	logger.Info("Checking InfluxDB connectivity...")
+	healthyCount := 0
+	for _, manager := range influxManagers {
+		if err := manager.CheckHealth(ctx); err != nil {
+			logger.Warn("InfluxDB %s health check failed: %v", manager.instance.URL, err)
+		} else {
+			logger.Info("InfluxDB %s health check passed", manager.instance.URL)
+			healthyCount++
+		}
+	}
+
+	if healthyCount == 0 {
+		log.Fatalf("All InfluxDB instances are unhealthy")
+	}
+
+	// Defer closing all InfluxDB clients
+	defer func() {
+		for _, manager := range influxManagers {
+			manager.Close()
+		}
+	}()
+
+	// Setup point buffer for batching writes
+	pointBuffer := NewPointBuffer(
+		config.BatchWriteSize,
+		time.Duration(config.BatchWriteInterval)*time.Second,
+		influxManagers,
+	)
+
+	// Setup periodic buffer flushing
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		flushTicker := time.NewTicker(time.Duration(config.BatchWriteInterval) * time.Second)
+		defer flushTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Info("Flushing remaining points before shutdown...")
+				if err := pointBuffer.Flush(); err != nil {
+					logger.Error("Failed to flush points on shutdown: %v", err)
+				}
+				return
+			case <-flushTicker.C:
+				if err := pointBuffer.Flush(); err != nil {
+					logger.Error("Failed to flush points: %v", err)
+				}
+			}
+		}
+	}()
+
+	// Setup device cache
+	var deviceCache *DeviceCache
+	if config.CacheTTL > 0 {
+		deviceCache = NewDeviceCache(time.Duration(config.CacheTTL) * time.Second)
+		logger.Info("Device state caching enabled (TTL: %d seconds)", config.CacheTTL)
+	}
+
+	// Setup rate limiter
+	rateLimiter := NewRateLimiter(config.MaxConcurrent)
+	if config.MaxConcurrent > 0 {
+		logger.Info("Rate limiting enabled (max concurrent: %d)", config.MaxConcurrent)
+	}
 
 	// Discover plugs if auto-discovery is enabled
 	var plugIPs []string
@@ -894,12 +1260,16 @@ func main() {
 	}
 
 	logger.Info("Monitoring %d plug(s): %v", len(plugIPs), plugIPs)
-	logger.Info("Polling interval: %d seconds", config.PollInterval)
+	logger.Info("Default polling interval: %d seconds", config.PollInterval)
 	logger.Info("Request timeout: %d seconds", config.RequestTimeout)
 	logger.Info("Max retries: %d", config.MaxRetries)
 
+	// Log device-specific intervals if configured
+	if len(config.DevicePollInterval) > 0 {
+		logger.Info("Device-specific poll intervals configured for %d device(s)", len(config.DevicePollInterval))
+	}
+
 	// Rediscover plugs periodically (every hour)
-	var wg sync.WaitGroup
 	if config.AutoDiscover {
 		wg.Add(1)
 		go func() {
@@ -947,47 +1317,54 @@ func main() {
 		}()
 	}
 
-	ticker := time.NewTicker(time.Duration(config.PollInterval) * time.Second)
-	defer ticker.Stop()
-
 	timeout := time.Duration(config.RequestTimeout) * time.Second
 
-	// Initial collection
+	// Helper function to get poll interval for a device
+	getPollInterval := func(ip string) time.Duration {
+		if interval, exists := config.DevicePollInterval[ip]; exists && interval > 0 {
+			return time.Duration(interval) * time.Second
+		}
+		return time.Duration(config.PollInterval) * time.Second
+	}
+
+	// Start polling goroutine for each device with its own ticker
 	plugIPsMu.Lock()
 	for _, plugIP := range plugIPs {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			collectAndLog(ctx, ip, config.TapoEmail, config.TapoPassword, writeAPI, timeout, config.MaxRetries)
+
+			interval := getPollInterval(ip)
+			logger.Info("[%s] Starting polling with interval: %v", ip, interval)
+
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+
+			// Initial collection
+			collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
+				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries)
+
+			// Periodic collection
+			for {
+				select {
+				case <-ctx.Done():
+					logger.Debug("[%s] Stopping polling", ip)
+					return
+				case <-ticker.C:
+					collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
+						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries)
+				}
+			}
 		}(plugIP)
 	}
 	plugIPsMu.Unlock()
 
-	// Periodic collection
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("Shutdown signal received, stopping periodic collection...")
-			ticker.Stop()
-			logger.Info("Waiting for all goroutines to finish...")
-			wg.Wait()
-			logger.Info("Graceful shutdown complete")
-			return
-		case <-ticker.C:
-			plugIPsMu.Lock()
-			currentPlugs := make([]string, len(plugIPs))
-			copy(currentPlugs, plugIPs)
-			plugIPsMu.Unlock()
-
-			for _, plugIP := range currentPlugs {
-				wg.Add(1)
-				go func(ip string) {
-					defer wg.Done()
-					collectAndLog(ctx, ip, config.TapoEmail, config.TapoPassword, writeAPI, timeout, config.MaxRetries)
-				}(plugIP)
-			}
-		}
-	}
+	// Wait for shutdown signal
+	<-ctx.Done()
+	logger.Info("Shutdown signal received, stopping all polling...")
+	logger.Info("Waiting for all goroutines to finish...")
+	wg.Wait()
+	logger.Info("Graceful shutdown complete")
 }
 
 func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI api.WriteAPIBlocking, timeout time.Duration, maxRetries int) {
@@ -1008,6 +1385,68 @@ func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI
 		plugIP,
 		float64(energy.Result.CurrentPower)/1000.0,
 		float64(energy.Result.TodayEnergy)/1000.0,
+	)
+}
+
+// collectAndLogBuffered collects energy data with caching, buffering, and rate limiting
+func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
+	buffer *PointBuffer, cache *DeviceCache, limiter *RateLimiter,
+	timeout time.Duration, maxRetries int) {
+
+	// Acquire rate limiter token
+	if limiter != nil {
+		limiter.Acquire()
+		defer limiter.Release()
+	}
+
+	var energy *EnergyUsageResponse
+	var fromCache bool
+
+	// Try to get from cache first
+	if cache != nil {
+		if cachedData, found := cache.Get(plugIP); found {
+			energy = cachedData
+			fromCache = true
+			logger.Debug("[%s] Using cached data", plugIP)
+		}
+	}
+
+	// If not in cache, fetch from device
+	if energy == nil {
+		client := NewTapoClient(plugIP, email, password, timeout, maxRetries)
+
+		var err error
+		energy, err = client.GetEnergyUsageWithContext(ctx)
+		if err != nil {
+			logger.Error("[%s] Failed to get energy usage: %v", plugIP, err)
+			return
+		}
+
+		// Store in cache
+		if cache != nil {
+			cache.Set(plugIP, energy)
+		}
+	}
+
+	// Create InfluxDB point
+	point := createInfluxPoint(plugIP, energy)
+
+	// Add to buffer
+	if err := buffer.Add(point); err != nil {
+		logger.Error("[%s] Failed to buffer point: %v", plugIP, err)
+		return
+	}
+
+	cacheStatus := ""
+	if fromCache {
+		cacheStatus = " (cached)"
+	}
+
+	logger.Debug("[%s] Current power: %.2fW, Today: %.3fkWh%s",
+		plugIP,
+		float64(energy.Result.CurrentPower)/1000.0,
+		float64(energy.Result.TodayEnergy)/1000.0,
+		cacheStatus,
 	)
 }
 
