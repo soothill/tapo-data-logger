@@ -1,3 +1,5 @@
+// Copyright (c) 2025 soothill. All rights reserved.
+
 package main
 
 import (
