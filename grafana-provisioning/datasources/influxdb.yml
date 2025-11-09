@@ -1,0 +1,19 @@
+# Grafana datasource provisioning for InfluxDB
+# This file automatically configures the InfluxDB datasource in Grafana
+
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    jsonData:
+      version: Flux
+      organization: my-org
+      defaultBucket: tapo_energy
+      tlsSkipVerify: false
+    secureJsonData:
+      token: my-super-secret-auth-token
+    isDefault: true
+    editable: true
