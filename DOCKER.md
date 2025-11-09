@@ -353,7 +353,47 @@ docker stats
 
 ---
 
+## Using Pre-built Images from GitHub Container Registry
+
+The project automatically builds and publishes Docker images to GitHub Container Registry (GHCR) for easy deployment.
+
+### Available Tags
+
+- `latest` - Latest build from the main branch
+- `main` - Latest build from the main branch
+- `v*.*.*` - Specific version tags (e.g., v1.0.0)
+- `main-<sha>` - Specific commit builds
+
+### Pull and Run from GHCR
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/soothill/tapo-data-logger:latest
+
+# Run the image
+docker run -d \
+  --name tapo-logger \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  -p 8080:8080 \
+  ghcr.io/soothill/tapo-data-logger:latest
+```
+
+### Using GHCR Images with Docker Compose
+
+Update your `docker-compose.yml` or `docker-compose-standalone.yml` to use the pre-built image:
+
+```yaml
+services:
+  tapo-logger:
+    image: ghcr.io/soothill/tapo-data-logger:latest
+    # Comment out or remove the 'build' section
+    container_name: tapo-data-logger
+    # ... rest of your configuration
+```
+
 ## Building the Image Manually
+
+If you prefer to build locally instead of using GHCR:
 
 ```bash
 # Build the image
