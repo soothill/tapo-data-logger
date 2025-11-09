@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/grandcat/zeroconf"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
@@ -56,6 +57,13 @@ type Config struct {
 	SlackWebhookURL    string                    `json:"slack_webhook_url"`    // Slack webhook URL for alerts
 	AlertsEnabled      bool                      `json:"alerts_enabled"`       // Enable/disable alerts
 	AlertAfterFailures int                       `json:"alert_after_failures"` // Consecutive failures before alerting
+	MQTTEnabled        bool                      `json:"mqtt_enabled"`         // Enable/disable MQTT publishing
+	MQTTBroker         string                    `json:"mqtt_broker"`          // MQTT broker URL (e.g., tcp://localhost:1883)
+	MQTTUsername       string                    `json:"mqtt_username"`        // MQTT username (optional)
+	MQTTPassword       string                    `json:"mqtt_password"`        // MQTT password (optional)
+	MQTTClientID       string                    `json:"mqtt_client_id"`       // MQTT client ID (optional, auto-generated if empty)
+	MQTTTopicPrefix    string                    `json:"mqtt_topic_prefix"`    // MQTT topic prefix (default: "tapo")
+	MQTTQoS            int                       `json:"mqtt_qos"`             // MQTT QoS level (0, 1, or 2)
 }
 
 type InfluxDBInstance struct {
@@ -225,6 +233,17 @@ func ValidateConfig(config *Config) error {
 			config.AlertAfterFailures = 3 // Default to 3 consecutive failures
 		}
 	}
+	if config.MQTTEnabled {
+		if config.MQTTBroker == "" {
+			return fmt.Errorf("mqtt_broker is required when mqtt_enabled is true")
+		}
+		if config.MQTTTopicPrefix == "" {
+			config.MQTTTopicPrefix = "tapo" // Default topic prefix
+		}
+		if config.MQTTQoS < 0 || config.MQTTQoS > 2 {
+			config.MQTTQoS = 0 // Default to QoS 0
+		}
+	}
 	return nil
 }
 
@@ -265,6 +284,50 @@ type EnergyUsageResponse struct {
 		TodayRuntime int `json:"today_runtime"` // in minutes
 		MonthRuntime int `json:"month_runtime"` // in minutes
 	} `json:"result"`
+}
+
+type DeviceInfoResponse struct {
+	ErrorCode int `json:"error_code"`
+	Result    struct {
+		DeviceID       string `json:"device_id"`
+		FwVer          string `json:"fw_ver"`
+		HwVer          string `json:"hw_ver"`
+		Type           string `json:"type"`
+		Model          string `json:"model"`
+		Mac            string `json:"mac"`
+		HwID           string `json:"hw_id"`
+		FwID           string `json:"fw_id"`
+		OemID          string `json:"oem_id"`
+		IP             string `json:"ip"`
+		TimeDiff       int    `json:"time_diff"`
+		SSID           string `json:"ssid"`
+		RSSI           int    `json:"rssi"`
+		SignalLevel    int    `json:"signal_level"`
+		Latitude       int    `json:"latitude"`
+		Longitude      int    `json:"longitude"`
+		Lang           string `json:"lang"`
+		Avatar         string `json:"avatar"`
+		Region         string `json:"region"`
+		Specs          string `json:"specs"`
+		Nickname       string `json:"nickname"`
+		HasSetLocation bool   `json:"has_set_location_info"`
+		DeviceOn       bool   `json:"device_on"`
+		OnTime         int    `json:"on_time"`
+		OverHeated     bool   `json:"overheated"`
+	} `json:"result"`
+}
+
+type DeviceMetadata struct {
+	IP          string
+	Name        string
+	Model       string
+	FirmwareVer string
+	HardwareVer string
+	MAC         string
+	DeviceID    string
+	Type        string
+	LastUpdated time.Time
+	mu          sync.RWMutex
 }
 
 // DeviceCache stores cached device state
@@ -907,6 +970,122 @@ func (t *TapoClient) doGetEnergyUsage(ctx context.Context) (*EnergyUsageResponse
 	return &energyResp, nil
 }
 
+func (t *TapoClient) GetDeviceInfo() (*DeviceInfoResponse, error) {
+	return t.GetDeviceInfoWithContext(context.Background())
+}
+
+func (t *TapoClient) GetDeviceInfoWithContext(ctx context.Context) (*DeviceInfoResponse, error) {
+	// Ensure we have a valid token
+	if err := t.ensureAuthenticated(ctx); err != nil {
+		return nil, fmt.Errorf("authentication failed: %w", err)
+	}
+
+	var result *DeviceInfoResponse
+	err := t.retryWithBackoff(ctx, func() error {
+		var err error
+		result, err = t.doGetDeviceInfo(ctx)
+
+		// If we get an authentication error, try refreshing the token once
+		if err != nil && strings.Contains(err.Error(), "error code: -1001") {
+			logger.Debug("[%s] Authentication error detected, refreshing token", t.ip)
+			if refreshErr := t.HandshakeWithContext(ctx); refreshErr != nil {
+				return fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			result, err = t.doGetDeviceInfo(ctx)
+		}
+
+		return err
+	}, "get_device_info")
+
+	return result, err
+}
+
+func (t *TapoClient) doGetDeviceInfo(ctx context.Context) (*DeviceInfoResponse, error) {
+	// Create symmetric key for AES encryption
+	key := make([]byte, 16)
+	iv := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+
+	// Create request
+	request := map[string]interface{}{
+		"method":          "get_device_info",
+		"requestTimeMils": time.Now().UnixMilli(),
+	}
+
+	jsonRequest, _ := json.Marshal(request)
+
+	// Encrypt request
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	mode := cipher.NewCBCEncrypter(block, iv)
+	padded := pkcs7Pad(jsonRequest, aes.BlockSize)
+	encrypted := make([]byte, len(padded))
+	mode.CryptBlocks(encrypted, padded)
+
+	securePayload := map[string]interface{}{
+		"method": "securePassthrough",
+		"params": map[string]string{
+			"request": base64.StdEncoding.EncodeToString(encrypted),
+		},
+	}
+
+	body, _ := json.Marshal(securePayload)
+
+	t.mu.Lock()
+	token := t.token
+	cookies := t.cookies
+	t.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://%s/app?token=%s", t.ip, token), bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var secureResp SecurePassthroughResponse
+	if err := json.NewDecoder(resp.Body).Decode(&secureResp); err != nil {
+		return nil, err
+	}
+
+	if secureResp.ErrorCode != 0 {
+		return nil, fmt.Errorf("get device info failed with error code: %d", secureResp.ErrorCode)
+	}
+
+	// Decrypt response
+	encryptedResponse, _ := base64.StdEncoding.DecodeString(secureResp.Result.Response)
+
+	block, _ = aes.NewCipher(key)
+	mode2 := cipher.NewCBCDecrypter(block, iv)
+	decrypted := make([]byte, len(encryptedResponse))
+	mode2.CryptBlocks(decrypted, encryptedResponse)
+
+	decrypted = pkcs7Unpad(decrypted)
+
+	var deviceInfo DeviceInfoResponse
+	if err := json.Unmarshal(decrypted, &deviceInfo); err != nil {
+		return nil, err
+	}
+
+	return &deviceInfo, nil
+}
+
 func pkcs7Pad(data []byte, blockSize int) []byte {
 	padding := blockSize - len(data)%blockSize
 	padtext := bytes.Repeat([]byte{byte(padding)}, padding)
@@ -1142,17 +1321,40 @@ func checkInfluxDBHealth(ctx context.Context, client influxdb2.Client) error {
 	return nil
 }
 
-func writeToInflux(writeAPI api.WriteAPIBlocking, plugIP string, energy *EnergyUsageResponse) error {
-	point := createInfluxPoint(plugIP, energy)
+func writeToInflux(writeAPI api.WriteAPIBlocking, plugIP string, energy *EnergyUsageResponse, metadata *DeviceMetadata) error {
+	point := createInfluxPoint(plugIP, energy, metadata)
 	return writeAPI.WritePoint(nil, point)
 }
 
-func createInfluxPoint(plugIP string, energy *EnergyUsageResponse) *write.Point {
+func createInfluxPoint(plugIP string, energy *EnergyUsageResponse, metadata *DeviceMetadata) *write.Point {
+	tags := map[string]string{
+		"plug_ip": plugIP,
+	}
+
+	// Add metadata as tags if available
+	if metadata != nil {
+		metadata.mu.RLock()
+		if metadata.Name != "" {
+			tags["device_name"] = metadata.Name
+		}
+		if metadata.Model != "" {
+			tags["device_model"] = metadata.Model
+		}
+		if metadata.FirmwareVer != "" {
+			tags["firmware_version"] = metadata.FirmwareVer
+		}
+		if metadata.MAC != "" {
+			tags["mac_address"] = metadata.MAC
+		}
+		if metadata.Type != "" {
+			tags["device_type"] = metadata.Type
+		}
+		metadata.mu.RUnlock()
+	}
+
 	return influxdb2.NewPoint(
 		"tapo_energy",
-		map[string]string{
-			"plug_ip": plugIP,
-		},
+		tags,
 		map[string]interface{}{
 			"current_power_watts": float64(energy.Result.CurrentPower) / 1000.0,
 			"today_energy_kwh":    float64(energy.Result.TodayEnergy) / 1000.0,
@@ -1162,6 +1364,119 @@ func createInfluxPoint(plugIP string, energy *EnergyUsageResponse) *write.Point 
 		},
 		time.Now(),
 	)
+}
+
+// publishToMQTT publishes energy and metadata to MQTT
+func publishToMQTT(mqttClient mqtt.Client, topicPrefix string, qos byte, plugIP string, energy *EnergyUsageResponse, metadata *DeviceMetadata) error {
+	if mqttClient == nil || !mqttClient.IsConnected() {
+		return fmt.Errorf("MQTT client is not connected")
+	}
+
+	// Create device identifier (use name if available, otherwise IP)
+	deviceID := strings.ReplaceAll(plugIP, ".", "_")
+	if metadata != nil {
+		metadata.mu.RLock()
+		if metadata.Name != "" {
+			deviceID = strings.ReplaceAll(metadata.Name, " ", "_")
+		}
+		metadata.mu.RUnlock()
+	}
+
+	// Publish energy data
+	energyData := map[string]interface{}{
+		"ip":                  plugIP,
+		"current_power_watts": float64(energy.Result.CurrentPower) / 1000.0,
+		"today_energy_kwh":    float64(energy.Result.TodayEnergy) / 1000.0,
+		"month_energy_kwh":    float64(energy.Result.MonthEnergy) / 1000.0,
+		"today_runtime_hours": float64(energy.Result.TodayRuntime) / 60.0,
+		"month_runtime_hours": float64(energy.Result.MonthRuntime) / 60.0,
+		"timestamp":           time.Now().Unix(),
+	}
+
+	// Add metadata if available
+	if metadata != nil {
+		metadata.mu.RLock()
+		if metadata.Name != "" {
+			energyData["device_name"] = metadata.Name
+		}
+		if metadata.Model != "" {
+			energyData["device_model"] = metadata.Model
+		}
+		if metadata.FirmwareVer != "" {
+			energyData["firmware_version"] = metadata.FirmwareVer
+		}
+		if metadata.MAC != "" {
+			energyData["mac_address"] = metadata.MAC
+		}
+		if metadata.Type != "" {
+			energyData["device_type"] = metadata.Type
+		}
+		metadata.mu.RUnlock()
+	}
+
+	payload, err := json.Marshal(energyData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal energy data: %w", err)
+	}
+
+	topic := fmt.Sprintf("%s/%s/energy", topicPrefix, deviceID)
+	token := mqttClient.Publish(topic, qos, false, payload)
+	if token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to publish to MQTT topic %s: %w", topic, token.Error())
+	}
+
+	// Publish individual sensor values for easier consumption
+	mqttClient.Publish(fmt.Sprintf("%s/%s/power", topicPrefix, deviceID), qos, false, fmt.Sprintf("%.2f", float64(energy.Result.CurrentPower)/1000.0))
+	mqttClient.Publish(fmt.Sprintf("%s/%s/today_energy", topicPrefix, deviceID), qos, false, fmt.Sprintf("%.3f", float64(energy.Result.TodayEnergy)/1000.0))
+	mqttClient.Publish(fmt.Sprintf("%s/%s/month_energy", topicPrefix, deviceID), qos, false, fmt.Sprintf("%.3f", float64(energy.Result.MonthEnergy)/1000.0))
+
+	logger.Debug("[%s] Published to MQTT topic: %s", plugIP, topic)
+	return nil
+}
+
+// publishMetadataToMQTT publishes device metadata to MQTT
+func publishMetadataToMQTT(mqttClient mqtt.Client, topicPrefix string, qos byte, metadata *DeviceMetadata) error {
+	if mqttClient == nil || !mqttClient.IsConnected() {
+		return fmt.Errorf("MQTT client is not connected")
+	}
+
+	if metadata == nil {
+		return nil
+	}
+
+	metadata.mu.RLock()
+	defer metadata.mu.RUnlock()
+
+	deviceID := strings.ReplaceAll(metadata.IP, ".", "_")
+	if metadata.Name != "" {
+		deviceID = strings.ReplaceAll(metadata.Name, " ", "_")
+	}
+
+	metadataPayload := map[string]interface{}{
+		"ip":               metadata.IP,
+		"name":             metadata.Name,
+		"model":            metadata.Model,
+		"firmware_version": metadata.FirmwareVer,
+		"hardware_version": metadata.HardwareVer,
+		"mac_address":      metadata.MAC,
+		"device_id":        metadata.DeviceID,
+		"type":             metadata.Type,
+		"last_updated":     metadata.LastUpdated.Unix(),
+	}
+
+	payload, err := json.Marshal(metadataPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	topic := fmt.Sprintf("%s/%s/metadata", topicPrefix, deviceID)
+	token := mqttClient.Publish(topic, qos, true, payload) // Use retained message for metadata
+	if token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to publish metadata to MQTT topic %s: %w", topic, token.Error())
+	}
+
+	logger.Debug("[%s] Published metadata to MQTT topic: %s", metadata.IP, topic)
+	return nil
 }
 
 func main() {
@@ -1320,6 +1635,65 @@ func main() {
 		logger.Info("Rate limiting enabled (max concurrent: %d)", config.MaxConcurrent)
 	}
 
+	// Setup MQTT client
+	var mqttClient mqtt.Client
+	if config.MQTTEnabled {
+		logger.Info("Setting up MQTT client...")
+		opts := mqtt.NewClientOptions()
+		opts.AddBroker(config.MQTTBroker)
+
+		if config.MQTTClientID != "" {
+			opts.SetClientID(config.MQTTClientID)
+		} else {
+			opts.SetClientID(fmt.Sprintf("tapo-data-logger-%d", time.Now().Unix()))
+		}
+
+		if config.MQTTUsername != "" {
+			opts.SetUsername(config.MQTTUsername)
+		}
+		if config.MQTTPassword != "" {
+			opts.SetPassword(config.MQTTPassword)
+		}
+
+		opts.SetAutoReconnect(true)
+		opts.SetConnectRetry(true)
+		opts.SetConnectRetryInterval(5 * time.Second)
+		opts.SetMaxReconnectInterval(1 * time.Minute)
+
+		opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
+			logger.Warn("MQTT connection lost: %v", err)
+		})
+
+		opts.SetOnConnectHandler(func(client mqtt.Client) {
+			logger.Info("MQTT connected to broker: %s", config.MQTTBroker)
+		})
+
+		mqttClient = mqtt.NewClient(opts)
+		if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+			logger.Error("Failed to connect to MQTT broker: %v", token.Error())
+			logger.Warn("MQTT publishing will be disabled")
+			mqttClient = nil
+		} else {
+			logger.Info("MQTT client connected successfully")
+			logger.Info("MQTT topic prefix: %s", config.MQTTTopicPrefix)
+			logger.Info("MQTT QoS: %d", config.MQTTQoS)
+		}
+
+		// Defer MQTT disconnect
+		defer func() {
+			if mqttClient != nil && mqttClient.IsConnected() {
+				logger.Info("Disconnecting MQTT client...")
+				mqttClient.Disconnect(250)
+			}
+		}()
+	} else {
+		logger.Info("MQTT publishing disabled")
+	}
+
+	// Setup device metadata storage
+	deviceMetadata := make(map[string]*DeviceMetadata)
+	var deviceMetadataMu sync.RWMutex
+
 	// Discover plugs if auto-discovery is enabled
 	var plugIPs []string
 	var plugIPsMu sync.Mutex
@@ -1470,7 +1844,8 @@ func main() {
 
 			// Initial collection
 			collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
-				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config)
+				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config,
+				mqttClient, deviceMetadata, &deviceMetadataMu)
 
 			// Periodic collection
 			for {
@@ -1480,7 +1855,8 @@ func main() {
 					return
 				case <-ticker.C:
 					collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
-						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config)
+						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config,
+						mqttClient, deviceMetadata, &deviceMetadataMu)
 				}
 			}
 		}(plugIP)
@@ -1530,7 +1906,7 @@ func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI
 	// Device is online - check if we need to send a recovery notification
 	wasOffline := !deviceState.IsOnline || deviceState.AlertSent
 
-	if err := writeToInflux(writeAPI, plugIP, energy); err != nil {
+	if err := writeToInflux(writeAPI, plugIP, energy, nil); err != nil {
 		logger.Error("[%s] Failed to write to InfluxDB: %v", plugIP, err)
 		return
 	}
@@ -1564,7 +1940,8 @@ func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI
 // collectAndLogBuffered collects energy data with caching, buffering, and rate limiting
 func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 	buffer *PointBuffer, cache *DeviceCache, limiter *RateLimiter,
-	timeout time.Duration, maxRetries int, deviceState *DeviceState, config *Config) {
+	timeout time.Duration, maxRetries int, deviceState *DeviceState, config *Config,
+	mqttClient mqtt.Client, deviceMetadata map[string]*DeviceMetadata, deviceMetadataMu *sync.RWMutex) {
 
 	// Acquire rate limiter token
 	if limiter != nil {
@@ -1586,9 +1963,55 @@ func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 
 	// If not in cache, fetch from device
 	var err error
+	client := NewTapoClient(plugIP, email, password, timeout, maxRetries)
+
 	if energy == nil {
-		client := NewTapoClient(plugIP, email, password, timeout, maxRetries)
 		energy, err = client.GetEnergyUsageWithContext(ctx)
+	}
+
+	// Fetch device metadata if not cached or if it's been more than 1 hour
+	var metadata *DeviceMetadata
+	deviceMetadataMu.RLock()
+	existingMetadata, hasMetadata := deviceMetadata[plugIP]
+	deviceMetadataMu.RUnlock()
+
+	shouldFetchMetadata := !hasMetadata || (hasMetadata && time.Since(existingMetadata.LastUpdated) > 1*time.Hour)
+
+	if shouldFetchMetadata && err == nil {
+		deviceInfo, metadataErr := client.GetDeviceInfoWithContext(ctx)
+		if metadataErr != nil {
+			logger.Debug("[%s] Failed to fetch device metadata: %v", plugIP, metadataErr)
+		} else {
+			// Create or update metadata
+			newMetadata := &DeviceMetadata{
+				IP:          plugIP,
+				Name:        deviceInfo.Result.Nickname,
+				Model:       deviceInfo.Result.Model,
+				FirmwareVer: deviceInfo.Result.FwVer,
+				HardwareVer: deviceInfo.Result.HwVer,
+				MAC:         deviceInfo.Result.Mac,
+				DeviceID:    deviceInfo.Result.DeviceID,
+				Type:        deviceInfo.Result.Type,
+				LastUpdated: time.Now(),
+			}
+
+			deviceMetadataMu.Lock()
+			deviceMetadata[plugIP] = newMetadata
+			deviceMetadataMu.Unlock()
+
+			logger.Info("[%s] Updated device metadata: %s (%s, FW: %s)", plugIP, newMetadata.Name, newMetadata.Model, newMetadata.FirmwareVer)
+
+			// Publish metadata to MQTT if enabled
+			if config.MQTTEnabled && mqttClient != nil {
+				if mqttErr := publishMetadataToMQTT(mqttClient, config.MQTTTopicPrefix, byte(config.MQTTQoS), newMetadata); mqttErr != nil {
+					logger.Debug("[%s] Failed to publish metadata to MQTT: %v", plugIP, mqttErr)
+				}
+			}
+
+			metadata = newMetadata
+		}
+	} else if hasMetadata {
+		metadata = existingMetadata
 	}
 
 	deviceState.mu.Lock()
@@ -1626,8 +2049,8 @@ func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 	// Device is online - check if we need to send a recovery notification
 	wasOffline := !deviceState.IsOnline || deviceState.AlertSent
 
-	// Create InfluxDB point
-	point := createInfluxPoint(plugIP, energy)
+	// Create InfluxDB point with metadata
+	point := createInfluxPoint(plugIP, energy, metadata)
 
 	// Add to buffer
 	if err := buffer.Add(point); err != nil {
@@ -1635,13 +2058,26 @@ func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 		return
 	}
 
+	// Publish to MQTT if enabled
+	if config.MQTTEnabled && mqttClient != nil {
+		if mqttErr := publishToMQTT(mqttClient, config.MQTTTopicPrefix, byte(config.MQTTQoS), plugIP, energy, metadata); mqttErr != nil {
+			logger.Debug("[%s] Failed to publish to MQTT: %v", plugIP, mqttErr)
+		}
+	}
+
 	cacheStatus := ""
 	if fromCache {
 		cacheStatus = " (cached)"
 	}
 
-	logger.Debug("[%s] Current power: %.2fW, Today: %.3fkWh%s",
+	deviceName := plugIP
+	if metadata != nil && metadata.Name != "" {
+		deviceName = metadata.Name
+	}
+
+	logger.Debug("[%s (%s)] Current power: %.2fW, Today: %.3fkWh%s",
 		plugIP,
+		deviceName,
 		float64(energy.Result.CurrentPower)/1000.0,
 		float64(energy.Result.TodayEnergy)/1000.0,
 		cacheStatus,
