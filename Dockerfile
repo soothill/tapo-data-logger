@@ -19,7 +19,10 @@ COPY *.go ./
 COPY static/ ./static/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags="-w -s" -o tapo-data-logger .
+# Docker Buildx automatically sets TARGETOS and TARGETARCH for multi-platform builds
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -installsuffix cgo -ldflags="-w -s" -o tapo-data-logger .
 
 # Stage 2: Create minimal runtime image
 FROM alpine:latest
