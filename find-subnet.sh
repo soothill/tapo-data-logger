@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright (c) 2025 soothill. All rights reserved.
 
 # Helper script to detect your local subnet for Tapo plug discovery
 
