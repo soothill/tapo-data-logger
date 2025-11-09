@@ -160,8 +160,8 @@ func (t *TapoClient) Handshake() error {
 
 func (t *TapoClient) login(serverPubKey *rsa.PublicKey, privateKey *rsa.PrivateKey) error {
 	loginPayload := map[string]string{
-		"method":   "login_device",
-		"params":   fmt.Sprintf(`{"username":"%s","password":"%s"}`, base64.StdEncoding.EncodeToString([]byte(t.email)), base64.StdEncoding.EncodeToString([]byte(t.password))),
+		"method":          "login_device",
+		"params":          fmt.Sprintf(`{"username":"%s","password":"%s"}`, base64.StdEncoding.EncodeToString([]byte(t.email)), base64.StdEncoding.EncodeToString([]byte(t.password))),
 		"requestTimeMils": fmt.Sprintf("%d", time.Now().UnixMilli()),
 	}
 
@@ -242,7 +242,7 @@ func (t *TapoClient) GetEnergyUsage() (*EnergyUsageResponse, error) {
 
 	// Create request
 	request := map[string]interface{}{
-		"method": "get_energy_usage",
+		"method":          "get_energy_usage",
 		"requestTimeMils": time.Now().UnixMilli(),
 	}
 
@@ -294,12 +294,12 @@ func (t *TapoClient) GetEnergyUsage() (*EnergyUsageResponse, error) {
 
 	// Decrypt response
 	encryptedResponse, _ := base64.StdEncoding.DecodeString(secureResp.Result.Response)
-	
+
 	block, _ = aes.NewCipher(key)
 	mode2 := cipher.NewCBCDecrypter(block, iv)
 	decrypted := make([]byte, len(encryptedResponse))
 	mode2.CryptBlocks(decrypted, encryptedResponse)
-	
+
 	decrypted = pkcs7Unpad(decrypted)
 
 	var energyResp EnergyUsageResponse
@@ -345,7 +345,7 @@ func DiscoverPlugsMDNS(timeout time.Duration) ([]string, error) {
 			// Check for TP-Link/Tapo in the hostname or service info
 			if strings.Contains(strings.ToLower(entry.HostName), "tapo") ||
 				strings.Contains(strings.ToLower(entry.Instance), "tapo") {
-				
+
 				mu.Lock()
 				for _, ip := range entry.AddrIPv4 {
 					ipStr := ip.String()
@@ -362,7 +362,7 @@ func DiscoverPlugsMDNS(timeout time.Duration) ([]string, error) {
 
 	// Browse for common service types
 	serviceTypes := []string{"_hap._tcp", "_http._tcp", "_tapo._tcp"}
-	
+
 	for _, serviceType := range serviceTypes {
 		if err := resolver.Browse(ctx, serviceType, "local.", entries); err != nil {
 			log.Printf("Warning: Failed to browse for %s: %v", serviceType, err)
@@ -389,11 +389,11 @@ func DiscoverPlugsScan(subnet string, timeout time.Duration) ([]string, error) {
 	// Scan all IPs in the subnet
 	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
 		ipStr := ip.String()
-		
+
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			
+
 			if isTapoDevice(ip, timeout) {
 				mu.Lock()
 				log.Printf("Discovered Tapo device via scan: %s", ip)
@@ -421,7 +421,7 @@ func inc(ip net.IP) {
 func isTapoDevice(ip string, timeout time.Duration) bool {
 	// Try to connect to the Tapo HTTP endpoint
 	client := &http.Client{Timeout: timeout}
-	
+
 	// Send a simple handshake request to see if it's a Tapo device
 	testPayload := map[string]interface{}{
 		"method": "handshake",
@@ -429,26 +429,26 @@ func isTapoDevice(ip string, timeout time.Duration) bool {
 			"key": "test",
 		},
 	}
-	
+
 	body, _ := json.Marshal(testPayload)
-	
+
 	resp, err := client.Post(
 		fmt.Sprintf("http://%s/app", ip),
 		"application/json",
 		bytes.NewBuffer(body),
 	)
-	
+
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	
+
 	// Check if the response looks like a Tapo device
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false
 	}
-	
+
 	// Tapo devices will respond with an error_code field
 	_, hasErrorCode := result["error_code"]
 	return hasErrorCode
@@ -471,7 +471,7 @@ func DiscoverPlugs(method string, subnet string, timeout time.Duration) ([]strin
 				seen[ip] = true
 			}
 		}
-		
+
 	case "scan":
 		if subnet == "" {
 			return nil, fmt.Errorf("scan method requires subnet to be specified")
@@ -486,7 +486,7 @@ func DiscoverPlugs(method string, subnet string, timeout time.Duration) ([]strin
 				seen[ip] = true
 			}
 		}
-		
+
 	case "both":
 		// Try mDNS first
 		plugs, err := DiscoverPlugsMDNS(timeout)
@@ -500,7 +500,7 @@ func DiscoverPlugs(method string, subnet string, timeout time.Duration) ([]strin
 				}
 			}
 		}
-		
+
 		// Then try scanning if subnet is provided
 		if subnet != "" {
 			plugs, err := DiscoverPlugsScan(subnet, timeout)
@@ -515,7 +515,7 @@ func DiscoverPlugs(method string, subnet string, timeout time.Duration) ([]strin
 				}
 			}
 		}
-		
+
 	default:
 		return nil, fmt.Errorf("unknown discovery method: %s (use 'mdns', 'scan', or 'both')", method)
 	}
@@ -561,15 +561,15 @@ func main() {
 
 	// Discover plugs if auto-discovery is enabled
 	var plugIPs []string
-	
+
 	if config.AutoDiscover {
 		log.Println("Starting plug discovery...")
-		
+
 		discoveryMethod := config.DiscoveryMethod
 		if discoveryMethod == "" {
 			discoveryMethod = "both"
 		}
-		
+
 		discovered, err := DiscoverPlugs(discoveryMethod, config.ScanSubnet, 2*time.Second)
 		if err != nil {
 			log.Printf("Warning: Discovery failed: %v", err)
@@ -578,7 +578,7 @@ func main() {
 			plugIPs = discovered
 		}
 	}
-	
+
 	// Add manually configured IPs
 	for _, ip := range config.PlugIPs {
 		// Check if already in discovered list
@@ -593,7 +593,7 @@ func main() {
 			plugIPs = append(plugIPs, ip)
 		}
 	}
-	
+
 	if len(plugIPs) == 0 {
 		log.Fatalf("No plugs found or configured. Enable auto_discover or add plug_ips to config.")
 	}
@@ -613,7 +613,7 @@ func main() {
 		go func() {
 			rediscoveryTicker := time.NewTicker(1 * time.Hour)
 			defer rediscoveryTicker.Stop()
-			
+
 			for range rediscoveryTicker.C {
 				log.Println("Re-discovering plugs...")
 				discovered, err := DiscoverPlugs(config.DiscoveryMethod, config.ScanSubnet, 2*time.Second)
@@ -621,7 +621,7 @@ func main() {
 					log.Printf("Warning: Re-discovery failed: %v", err)
 					continue
 				}
-				
+
 				// Update plug list
 				newPlugs := []string{}
 				for _, ip := range discovered {
@@ -637,7 +637,7 @@ func main() {
 						newPlugs = append(newPlugs, ip)
 					}
 				}
-				
+
 				if len(newPlugs) > 0 {
 					plugIPs = append(plugIPs, newPlugs...)
 					log.Printf("Now monitoring %d plug(s)", len(plugIPs))
@@ -681,10 +681,9 @@ func collectAndLog(plugIP, email, password string, writeAPI api.WriteAPIBlocking
 		return
 	}
 
-	log.Printf("[%s] Current power: %.2fW, Today: %.3fkWh", 
-		plugIP, 
+	log.Printf("[%s] Current power: %.2fW, Today: %.3fkWh",
+		plugIP,
 		float64(energy.Result.CurrentPower)/1000.0,
 		float64(energy.Result.TodayEnergy)/1000.0,
 	)
 }
-
