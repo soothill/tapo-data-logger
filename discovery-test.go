@@ -1,4 +1,4 @@
-// Copyright (c) 2025 soothill. All rights reserved.
+// Copyright (c) 2025 Darren Soothill. All rights reserved.
 
 //go:build ignore
 // +build ignore

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2025 soothill. All rights reserved.
+# Copyright (c) 2025 Darren Soothill. All rights reserved.
 
 # InfluxDB Setup Script for Tapo Energy Logger
 # This script helps set up InfluxDB for the Tapo energy monitoring application
