@@ -5,16 +5,65 @@
   "auto_discover": true,
   "discovery_method": "both",
   "scan_subnet": "192.168.1.0/24",
+
+  "_comment_influx": "Single InfluxDB configuration (use either this or influx_urls)",
   "influx_url": "http://localhost:8086",
   "influx_token": "your-influxdb-token",
   "influx_org": "your-org",
   "influx_bucket": "tapo_energy",
+
+  "_comment_influx_ha": "Multiple InfluxDB instances for HA/failover (optional)",
+  "influx_urls": [],
+  "_influx_urls_example": [
+    {
+      "url": "http://influxdb-primary:8086",
+      "token": "primary-token",
+      "org": "your-org",
+      "bucket": "tapo_energy",
+      "priority": 0
+    },
+    {
+      "url": "http://influxdb-secondary:8086",
+      "token": "secondary-token",
+      "org": "your-org",
+      "bucket": "tapo_energy",
+      "priority": 1
+    }
+  ],
+
+  "_comment_polling": "Polling configuration",
   "poll_interval_seconds": 60,
+  "device_poll_intervals": {},
+  "_device_poll_intervals_example": {
+    "192.168.1.100": 30,
+    "192.168.1.101": 120
+  },
+
+  "_comment_performance": "Performance optimization settings",
+  "batch_write_size": 100,
+  "batch_write_interval": 10,
+  "max_concurrent": 10,
+  "cache_ttl_seconds": 0,
+
+  "_comment_general": "General settings",
   "log_level": "info",
   "request_timeout_seconds": 10,
   "max_retries": 3,
+
+  "_comment_alerts": "Slack alerting configuration",
   "slack_webhook_url": "",
   "alerts_enabled": false,
-  "alert_after_failures": 3
-}
+  "alert_after_failures": 3,
 
+  "_comment_descriptions": {
+    "batch_write_size": "Number of data points to batch before writing to InfluxDB (default: 100)",
+    "batch_write_interval": "Maximum seconds to wait before flushing batch (default: 10)",
+    "max_concurrent": "Maximum concurrent device requests (0 = unlimited, default: 0)",
+    "cache_ttl_seconds": "Device state cache TTL in seconds (0 = disabled, default: 0)",
+    "device_poll_intervals": "Override default poll interval for specific devices (IP -> seconds)",
+    "influx_urls": "Multiple InfluxDB instances for HA/failover (lower priority = higher preference)",
+    "slack_webhook_url": "Slack webhook URL for device offline alerts",
+    "alerts_enabled": "Enable Slack alerts for device failures",
+    "alert_after_failures": "Number of consecutive failures before sending alert"
+  }
+}
