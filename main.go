@@ -1211,6 +1211,25 @@ func createInfluxPoint(plugIP string, energy *EnergyUsageResponse) *write.Point 
 	)
 }
 
+// loadConfig loads and validates configuration from file
+func loadConfig(configFile string) (*Config, error) {
+	configData, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var config Config
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if err := ValidateConfig(&config); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+
+	return &config, nil
+}
+
 func main() {
 	// Load configuration
 	configFile := "config.json"
@@ -1218,20 +1237,13 @@ func main() {
 		configFile = os.Args[1]
 	}
 
-	configData, err := os.ReadFile(configFile)
+	config, err := loadConfig(configFile)
 	if err != nil {
-		log.Fatalf("Failed to read config file: %v", err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	var config Config
-	if err := json.Unmarshal(configData, &config); err != nil {
-		log.Fatalf("Failed to parse config file: %v", err)
-	}
-
-	// Validate configuration
-	if err := ValidateConfig(&config); err != nil {
-		log.Fatalf("Configuration validation failed: %v", err)
-	}
+	// Config mutex for safe concurrent access during reload
+	var configMu sync.RWMutex
 
 	// Initialize logger
 	logger = NewLogger(config.LogLevel)
@@ -1245,14 +1257,47 @@ func main() {
 	// Setup wait group for graceful shutdown
 	var wg sync.WaitGroup
 
-	// Setup signal handling for graceful shutdown
+	// Setup signal handling for graceful shutdown and config reload
 	sigChan := make(chan os.Signal, 1)
+	reloadChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(reloadChan, syscall.SIGHUP)
 
 	go func() {
 		sig := <-sigChan
 		logger.Info("Received signal %v, initiating graceful shutdown...", sig)
 		cancel()
+	}()
+
+	// Setup config reload handler
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-reloadChan:
+				logger.Info("Received SIGHUP, reloading configuration...")
+				newConfig, err := loadConfig(configFile)
+				if err != nil {
+					logger.Error("Failed to reload config: %v", err)
+					continue
+				}
+
+				configMu.Lock()
+				oldLogLevel := config.LogLevel
+				*config = *newConfig
+				configMu.Unlock()
+
+				// Update logger if log level changed
+				if oldLogLevel != newConfig.LogLevel {
+					logger = NewLogger(newConfig.LogLevel)
+					logger.Info("Log level updated to: %s", newConfig.LogLevel)
+				}
+
+				logger.Info("Configuration reloaded successfully")
+				logger.Info("Note: Some settings (InfluxDB connections, device list) require restart to take effect")
+			}
+		}
 	}()
 
 	// Setup InfluxDB clients (support multiple instances for HA/failover)
@@ -1517,7 +1562,7 @@ func main() {
 
 			// Initial collection
 			collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
-				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config)
+				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, config)
 
 			// Periodic collection
 			for {
@@ -1527,7 +1572,7 @@ func main() {
 					return
 				case <-ticker.C:
 					collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
-						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config)
+						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, config)
 				}
 			}
 		}(plugIP)
