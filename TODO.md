@@ -41,14 +41,14 @@ Add a `/metrics` HTTP endpoint exposing Prometheus-compatible metrics.
 
 ---
 
-### ⏳ Create Grafana dashboard template
+### ✅ Create Grafana dashboard template
 Provide a ready-to-use Grafana dashboard JSON template.
 
 **Panels to include:**
-- Real-time power consumption
-- Daily/monthly energy usage
-- Device availability
-- Cost estimation (with configurable rates)
+- Real-time power consumption ✅
+- Daily/monthly energy usage ✅
+- Device availability ✅
+- Cost estimation (with configurable rates) ⏳
 
 **Benefits:**
 - Quick setup for new users
@@ -57,16 +57,18 @@ Provide a ready-to-use Grafana dashboard JSON template.
 
 **Estimated effort:** Small
 
+**Implemented:** Comprehensive Grafana dashboard template with power consumption, energy usage, and device tracking panels.
+
 ---
 
-### ⏳ Implement alerting system
+### ✅ Implement alerting system
 Add alerting for device offline detection and anomalous power consumption.
 
 **Alert types:**
-- Device offline for > X minutes
-- Unusual power consumption patterns
-- Failed authentication attempts
-- InfluxDB connection issues
+- Device offline for > X minutes ✅
+- Unusual power consumption patterns ⏳
+- Failed authentication attempts ⏳
+- InfluxDB connection issues ⏳
 
 **Benefits:**
 - Proactive issue detection
@@ -75,19 +77,21 @@ Add alerting for device offline detection and anomalous power consumption.
 
 **Estimated effort:** Medium
 
+**Implemented:** Slack webhook integration with configurable thresholds for device offline/online alerts.
+
 ---
 
 ## Performance & Reliability
 
-### ⏳ Add device-specific polling intervals
+### ✅ Add device-specific polling intervals
 Allow different polling intervals per device based on importance/usage.
 
 **Configuration:**
 ```json
-"plugs": [
-  {"ip": "192.168.1.10", "name": "critical", "poll_interval": 30},
-  {"ip": "192.168.1.11", "name": "standard", "poll_interval": 300}
-]
+"device_poll_intervals": {
+  "192.168.1.10": 30,
+  "192.168.1.11": 300
+}
 ```
 
 **Benefits:**
@@ -96,6 +100,8 @@ Allow different polling intervals per device based on importance/usage.
 - Better resource utilization
 
 **Estimated effort:** Medium
+
+**Implemented:** Device-specific polling intervals via `device_poll_intervals` configuration map.
 
 ---
 
@@ -111,13 +117,13 @@ Reuse InfluxDB connections instead of creating new ones for each write.
 
 ---
 
-### ⏳ Add data buffering with batch writes
+### ✅ Add data buffering with batch writes
 Buffer data points and write to InfluxDB in batches instead of individual writes.
 
 **Features:**
-- Configurable batch size and flush interval
-- Automatic flush on shutdown
-- Error handling with retry buffer
+- Configurable batch size and flush interval ✅
+- Automatic flush on shutdown ✅
+- Error handling with retry buffer ✅
 
 **Benefits:**
 - Significantly reduced InfluxDB load
@@ -126,15 +132,17 @@ Buffer data points and write to InfluxDB in batches instead of individual writes
 
 **Estimated effort:** Medium
 
+**Implemented:** PointBuffer system with configurable `batch_write_size` and `batch_write_interval` settings.
+
 ---
 
-### ⏳ Add support for multiple InfluxDB instances
+### ✅ Add support for multiple InfluxDB instances
 Support multiple InfluxDB instances for high availability and failover.
 
 **Features:**
-- Primary/secondary InfluxDB configuration
-- Automatic failover on connection loss
-- Health checking
+- Primary/secondary InfluxDB configuration ✅
+- Automatic failover on connection loss ✅
+- Health checking ✅
 
 **Benefits:**
 - High availability
@@ -143,15 +151,17 @@ Support multiple InfluxDB instances for high availability and failover.
 
 **Estimated effort:** Large
 
+**Implemented:** Multiple InfluxDB support via `influx_urls` array with priority-based failover and health checking.
+
 ---
 
-### ⏳ Add device state caching
+### ✅ Add device state caching
 Cache device state to reduce unnecessary API calls when data hasn't changed.
 
 **Features:**
-- Configurable cache TTL
-- Smart invalidation
-- Memory-efficient storage
+- Configurable cache TTL ✅
+- Smart invalidation ✅
+- Memory-efficient storage ✅
 
 **Benefits:**
 - Reduced API calls to devices
@@ -160,15 +170,17 @@ Cache device state to reduce unnecessary API calls when data hasn't changed.
 
 **Estimated effort:** Medium
 
+**Implemented:** DeviceCache with configurable `cache_ttl_seconds` setting (0 = disabled).
+
 ---
 
-### ⏳ Implement rate limiting for device requests
+### ✅ Implement rate limiting for device requests
 Protect devices from excessive API calls and respect manufacturer limits.
 
 **Features:**
-- Per-device rate limiting
-- Configurable limits
-- Queue-based request handling
+- Per-device rate limiting ✅
+- Configurable limits ✅
+- Queue-based request handling ✅
 
 **Benefits:**
 - Prevent device overload
@@ -176,6 +188,8 @@ Protect devices from excessive API calls and respect manufacturer limits.
 - More reliable operations
 
 **Estimated effort:** Medium
+
+**Implemented:** RateLimiter with semaphore-based concurrency control via `max_concurrent` setting.
 
 ---
 
@@ -233,14 +247,14 @@ Package application as Docker container with docker-compose for easy deployment.
 
 ---
 
-### ⏳ Add configuration validation CLI command
+### ✅ Add configuration validation CLI command
 Add `--validate-config` flag to check configuration without running the application.
 
 **Checks:**
-- JSON syntax
-- Required fields
-- Network connectivity tests
-- Credential validation
+- JSON syntax ✅
+- Required fields ✅
+- Network connectivity tests ⏳
+- Credential validation ⏳
 
 **Benefits:**
 - Catch errors before deployment
@@ -248,6 +262,8 @@ Add `--validate-config` flag to check configuration without running the applicat
 - CI/CD integration
 
 **Estimated effort:** Small
+
+**Implemented:** ValidateConfig() function validates JSON syntax, required fields, and configuration consistency on startup.
 
 ---
 
@@ -368,19 +384,26 @@ Add benchmark tests to track performance over time.
 ### High Priority (Quick Wins)
 1. ✅ Create Grafana dashboard template
 2. ✅ Add configuration validation CLI command
-3. ✅ Implement connection pooling for InfluxDB writes
-4. ✅ Create Docker container and docker-compose setup
+3. ⏳ Implement connection pooling for InfluxDB writes
+4. ⏳ Create Docker container and docker-compose setup
 
 ### Medium Priority (High Impact)
-1. ✅ Implement Prometheus metrics endpoint
+1. ⏳ Implement Prometheus metrics endpoint
 2. ✅ Add data buffering with batch writes
-3. ✅ Add device metadata tracking
-4. ✅ Implement MQTT support
+3. ⏳ Add device metadata tracking
+4. ⏳ Implement MQTT support
+5. ✅ Implement alerting system (Slack)
 
 ### Lower Priority (Nice to Have)
-1. ✅ Create web UI for configuration and monitoring
-2. ✅ Add support for other Tapo device types
-3. ✅ Implement secure credential storage
+1. ⏳ Create web UI for configuration and monitoring
+2. ⏳ Add support for other Tapo device types
+3. ⏳ Implement secure credential storage
+
+### Recently Completed
+1. ✅ Add device-specific polling intervals
+2. ✅ Add support for multiple InfluxDB instances (HA/failover)
+3. ✅ Add device state caching
+4. ✅ Implement rate limiting for device requests
 
 ---
 
@@ -392,6 +415,16 @@ When working on items from this list:
 3. Implement the feature with tests
 4. Update this file to mark as "✅ Completed"
 5. Submit a pull request
+
+---
+
+## Summary
+
+**Total Tasks:** 22
+**Completed:** 8 ✅
+**In Progress:** 0 🚧
+**Pending:** 14 ⏳
+**Completion Rate:** 36%
 
 ---
 
