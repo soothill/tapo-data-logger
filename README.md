@@ -25,6 +25,26 @@ A Go application that collects power consumption data from TP-Link Tapo smart pl
 
 ## Installation
 
+### Option 1: Docker (Recommended)
+
+The easiest way to get started is with Docker. Pre-built images are available on GitHub Container Registry:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/soothill/tapo-data-logger:latest
+
+# Run with your config
+docker run -d \
+  --name tapo-logger \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  -p 8080:8080 \
+  ghcr.io/soothill/tapo-data-logger:latest
+```
+
+For full Docker deployment options including Docker Compose with InfluxDB and Grafana, see [DOCKER.md](DOCKER.md).
+
+### Option 2: Build from Source
+
 1. Clone or download this repository
 
 2. Install dependencies:
