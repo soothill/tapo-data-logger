@@ -13,6 +13,8 @@ A Go application that collects power consumption data from TP-Link Tapo smart pl
 - Concurrent data collection from multiple plugs
 - **Device offline detection** with Slack notifications
 - Automatic recovery notifications when devices come back online
+- **Mobile-responsive Web UI** for real-time monitoring on iPhone/Android
+- REST API for device data access
 
 ## Prerequisites
 
@@ -51,7 +53,10 @@ cp config.example.json config.json
   "poll_interval_seconds": 60,
   "slack_webhook_url": "",
   "alerts_enabled": false,
-  "alert_after_failures": 3
+  "alert_after_failures": 3,
+  "webui_enabled": true,
+  "webui_port": 8080,
+  "webui_host": "0.0.0.0"
 }
 ```
 
@@ -89,6 +94,9 @@ The application can automatically discover Tapo plugs on your network using thre
 | `alerts_enabled` | Enable Slack alerts for offline devices | `false` |
 | `slack_webhook_url` | Slack webhook URL for notifications | `""` |
 | `alert_after_failures` | Number of consecutive failures before alerting | `3` |
+| `webui_enabled` | Enable web UI for real-time monitoring | `false` |
+| `webui_port` | Web UI HTTP port | `8080` |
+| `webui_host` | Web UI bind address | `"0.0.0.0"` |
 
 **Notes:**
 - You can combine auto-discovery with manual IPs - both will be monitored
@@ -150,6 +158,42 @@ The application can send Slack notifications when devices go offline or come bac
 - Duration of downtime (for recovery notifications)
 - Number of failed poll attempts
 - Timestamp
+
+### Web UI Configuration
+
+The application includes a built-in mobile-responsive web interface for real-time monitoring of your Tapo devices.
+
+**Enable Web UI:**
+```json
+{
+  "webui_enabled": true,
+  "webui_port": 8080,
+  "webui_host": "0.0.0.0"
+}
+```
+
+**Configuration Options:**
+- `webui_enabled`: Enable/disable the web UI (default: `false`)
+- `webui_port`: HTTP port for the web server (default: `8080`)
+- `webui_host`: Bind address for the web server (default: `"0.0.0.0"` - all interfaces)
+
+**Access the Web UI:**
+
+Once enabled, access the web interface at:
+- From the same machine: `http://localhost:8080`
+- From mobile/other devices: `http://YOUR_SERVER_IP:8080`
+
+**Features:**
+- Real-time power consumption display
+- Device status indicators (online/offline)
+- Total energy usage summaries
+- Auto-refresh every 5 seconds
+- Mobile-optimized layout for iPhone and Android
+- Works great as a home screen webapp
+
+**REST API Endpoints:**
+- `GET /api/devices` - Get all devices with current data
+- `GET /api/device/{ip}` - Get specific device data
 
 ### InfluxDB Setup
 

@@ -64,6 +64,10 @@ type Config struct {
 	MQTTClientID       string                    `json:"mqtt_client_id"`       // MQTT client ID (optional, auto-generated if empty)
 	MQTTTopicPrefix    string                    `json:"mqtt_topic_prefix"`    // MQTT topic prefix (default: "tapo")
 	MQTTQoS            int                       `json:"mqtt_qos"`             // MQTT QoS level (0, 1, or 2)
+	// Web UI settings
+	WebUIEnabled bool   `json:"webui_enabled"` // Enable/disable web UI
+	WebUIPort    int    `json:"webui_port"`    // Web UI HTTP port (default: 8080)
+	WebUIHost    string `json:"webui_host"`    // Web UI bind address (default: "0.0.0.0")
 	// Connection pool settings for InfluxDB
 	InfluxMaxIdleConns        int `json:"influx_max_idle_conns"`         // Max idle connections across all hosts (0 = use default)
 	InfluxMaxIdleConnsPerHost int `json:"influx_max_idle_conns_per_host"` // Max idle connections per host (0 = use default)
@@ -247,6 +251,14 @@ func ValidateConfig(config *Config) error {
 		}
 		if config.MQTTQoS < 0 || config.MQTTQoS > 2 {
 			config.MQTTQoS = 0 // Default to QoS 0
+		}
+	}
+	if config.WebUIEnabled {
+		if config.WebUIPort <= 0 {
+			config.WebUIPort = 8080 // Default to port 8080
+		}
+		if config.WebUIHost == "" {
+			config.WebUIHost = "0.0.0.0" // Default to all interfaces
 		}
 	}
 	return nil
@@ -1954,6 +1966,42 @@ func main() {
 		}(plugIP)
 	}
 	plugIPsMu.Unlock()
+
+	// Start Web UI server if enabled
+	var webuiServer *WebUIServer
+	if config.WebUIEnabled {
+		webuiServer = NewWebUIServer(
+			config.WebUIHost,
+			config.WebUIPort,
+			deviceStates,
+			&deviceStatesMu,
+			deviceMetadata,
+			&deviceMetadataMu,
+			deviceCache,
+			config,
+		)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := webuiServer.Start(); err != nil && err != http.ErrServerClosed {
+				logger.Error("Web UI server error: %v", err)
+			}
+		}()
+
+		// Defer web UI shutdown
+		defer func() {
+			if webuiServer != nil {
+				if err := webuiServer.Shutdown(); err != nil {
+					logger.Error("Failed to shutdown Web UI server: %v", err)
+				}
+			}
+		}()
+
+		logger.Info("Web UI available at http://%s:%d", config.WebUIHost, config.WebUIPort)
+	} else {
+		logger.Info("Web UI disabled")
+	}
 
 	// Wait for shutdown signal
 	<-ctx.Done()

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Tapo Energy Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        h1 {
+            font-size: 28px;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .summary {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+
+        .summary-item {
+            flex: 1;
+            min-width: 120px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .summary-item .label {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .summary-item .value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .last-update {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+
+        .devices-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .device-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .device-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .device-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+
+        .device-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            flex: 1;
+        }
+
+        .device-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 10px;
+            margin-top: 5px;
+        }
+
+        .device-status.online {
+            background: #4ade80;
+            box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+        }
+
+        .device-status.offline {
+            background: #ef4444;
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+        }
+
+        .device-info {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .power-display {
+            background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+
+        .power-value {
+            font-size: 36px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .power-label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .metric {
+            background: #f3f4f6;
+            padding: 12px;
+            border-radius: 8px;
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .metric-value {
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: white;
+            font-size: 18px;
+        }
+
+        .error {
+            background: rgba(239, 68, 68, 0.95);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
+
+            .devices-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .summary {
+                gap: 10px;
+            }
+
+            .summary-item {
+                min-width: 100px;
+            }
+
+            .summary-item .value {
+                font-size: 20px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .power-value {
+                font-size: 28px;
+            }
+
+            .metric-value {
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⚡ Tapo Energy Monitor</h1>
+            <div class="summary" id="summary">
+                <div class="summary-item">
+                    <div class="label">Total Power</div>
+                    <div class="value" id="totalPower">--</div>
+                </div>
+                <div class="summary-item">
+                    <div class="label">Today Energy</div>
+                    <div class="value" id="todayEnergy">--</div>
+                </div>
+                <div class="summary-item">
+                    <div class="label">Month Energy</div>
+                    <div class="value" id="monthEnergy">--</div>
+                </div>
+                <div class="summary-item">
+                    <div class="label">Devices</div>
+                    <div class="value" id="deviceCount">--</div>
+                </div>
+            </div>
+            <div class="last-update">Last updated: <span id="lastUpdate">--</span></div>
+        </header>
+
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="loading" class="loading">Loading devices...</div>
+        <div id="devices" class="devices-grid"></div>
+    </div>
+
+    <script>
+        let updateInterval;
+        const API_URL = '/api/devices';
+        const REFRESH_INTERVAL = 5000; // 5 seconds
+
+        function formatPower(watts) {
+            return watts >= 1000 ? `${(watts / 1000).toFixed(2)} kW` : `${watts.toFixed(1)} W`;
+        }
+
+        function formatEnergy(kwh) {
+            return `${kwh.toFixed(3)} kWh`;
+        }
+
+        function formatTime(hours) {
+            if (hours < 1) {
+                return `${Math.round(hours * 60)} min`;
+            }
+            return `${hours.toFixed(1)} hrs`;
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function updateDevices() {
+            fetch(API_URL)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(devices => {
+                    hideError();
+                    renderDevices(devices);
+                    updateSummary(devices);
+                    updateLastUpdateTime();
+                    document.getElementById('loading').style.display = 'none';
+                })
+                .catch(error => {
+                    console.error('Error fetching devices:', error);
+                    showError(`Failed to fetch device data: ${error.message}`);
+                });
+        }
+
+        function updateSummary(devices) {
+            let totalPower = 0;
+            let todayEnergy = 0;
+            let monthEnergy = 0;
+            let onlineCount = 0;
+
+            devices.forEach(device => {
+                if (device.is_online) {
+                    totalPower += device.current_power_watts || 0;
+                    todayEnergy += device.today_energy_kwh || 0;
+                    monthEnergy += device.month_energy_kwh || 0;
+                    onlineCount++;
+                }
+            });
+
+            document.getElementById('totalPower').textContent = formatPower(totalPower);
+            document.getElementById('todayEnergy').textContent = formatEnergy(todayEnergy);
+            document.getElementById('monthEnergy').textContent = formatEnergy(monthEnergy);
+            document.getElementById('deviceCount').textContent = `${onlineCount}/${devices.length}`;
+        }
+
+        function updateLastUpdateTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString();
+            document.getElementById('lastUpdate').textContent = timeString;
+        }
+
+        function renderDevices(devices) {
+            const container = document.getElementById('devices');
+
+            if (devices.length === 0) {
+                container.innerHTML = '<div class="loading">No devices found</div>';
+                return;
+            }
+
+            // Sort devices: online first, then by name/IP
+            devices.sort((a, b) => {
+                if (a.is_online !== b.is_online) {
+                    return b.is_online ? 1 : -1;
+                }
+                const nameA = a.name || a.ip;
+                const nameB = b.name || b.ip;
+                return nameA.localeCompare(nameB);
+            });
+
+            container.innerHTML = devices.map(device => {
+                const deviceName = device.name || device.ip;
+                const statusClass = device.is_online ? 'online' : 'offline';
+                const power = device.current_power_watts || 0;
+                const todayEnergy = device.today_energy_kwh || 0;
+                const monthEnergy = device.month_energy_kwh || 0;
+                const todayRuntime = device.today_runtime_hours || 0;
+                const monthRuntime = device.month_runtime_hours || 0;
+
+                let deviceInfo = device.ip;
+                if (device.model) deviceInfo += ` • ${device.model}`;
+                if (device.firmware_version) deviceInfo += ` • FW ${device.firmware_version}`;
+
+                return `
+                    <div class="device-card">
+                        <div class="device-header">
+                            <div class="device-name">${deviceName}</div>
+                            <div class="device-status ${statusClass}"></div>
+                        </div>
+                        <div class="device-info">${deviceInfo}</div>
+                        ${device.is_online ? `
+                            <div class="power-display">
+                                <div class="power-value">${formatPower(power)}</div>
+                                <div class="power-label">Current Power</div>
+                            </div>
+                            <div class="metrics">
+                                <div class="metric">
+                                    <div class="metric-label">Today Energy</div>
+                                    <div class="metric-value">${formatEnergy(todayEnergy)}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Month Energy</div>
+                                    <div class="metric-value">${formatEnergy(monthEnergy)}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Today Runtime</div>
+                                    <div class="metric-value">${formatTime(todayRuntime)}</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Month Runtime</div>
+                                    <div class="metric-value">${formatTime(monthRuntime)}</div>
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="power-display" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+                                <div class="power-label">Device Offline</div>
+                                <div style="font-size: 12px; margin-top: 5px;">Last seen: ${device.last_seen}</div>
+                                ${device.consecutive_failures > 0 ? `<div style="font-size: 12px; margin-top: 5px;">Failed polls: ${device.consecutive_failures}</div>` : ''}
+                            </div>
+                        `}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Initial load
+        updateDevices();
+
+        // Auto-refresh every 5 seconds
+        updateInterval = setInterval(updateDevices, REFRESH_INTERVAL);
+
+        // Refresh when page becomes visible again (for mobile devices)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                updateDevices();
+            }
+        });
+    </script>
+</body>
+</html>
