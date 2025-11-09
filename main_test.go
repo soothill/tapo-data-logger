@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"testing"
@@ -229,7 +230,7 @@ func TestNewTapoClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewTapoClient(tt.ip, tt.email, tt.password)
+			client := NewTapoClient(tt.ip, tt.email, tt.password, 10*time.Second, 3)
 
 			if client == nil {
 				t.Fatal("NewTapoClient() returned nil")
@@ -427,7 +428,7 @@ func TestDiscoverPlugsMethodSelection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := DiscoverPlugs(tt.method, tt.subnet, 1*time.Second)
+			_, err := DiscoverPlugs(context.Background(), tt.method, tt.subnet, 1*time.Second)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("DiscoverPlugs() error = %v, wantErr %v", err, tt.wantErr)

@@ -2,21 +2,28 @@
 tapo-logger
 discovery-test
 
-# Configuration (may contain secrets)
+# Config files with credentials
 config.json
 
-# Go build cache
+# Go build artifacts
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Test binaries
 *.test
 
-# Output of the go coverage tool
+# Output of go coverage
 *.out
 
 # Dependency directories
 vendor/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

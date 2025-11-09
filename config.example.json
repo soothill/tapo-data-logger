@@ -9,6 +9,9 @@
   "influx_token": "your-influxdb-token",
   "influx_org": "your-org",
   "influx_bucket": "tapo_energy",
-  "poll_interval_seconds": 60
+  "poll_interval_seconds": 60,
+  "log_level": "info",
+  "request_timeout_seconds": 10,
+  "max_retries": 3
 }
 
