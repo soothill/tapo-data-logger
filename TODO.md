@@ -11,7 +11,7 @@ This document tracks suggested improvements and enhancements for the tapo-data-l
 
 ## Monitoring & Observability
 
-### ⏳ Add device metadata tracking
+### ✅ Add device metadata tracking
 Track device name, model, firmware version, and other metadata in InfluxDB alongside energy data.
 
 **Benefits:**
@@ -20,6 +20,8 @@ Track device name, model, firmware version, and other metadata in InfluxDB along
 - Enhanced data analysis capabilities
 
 **Estimated effort:** Medium
+
+**Implemented:** Device metadata (name, model, firmware version, MAC address, device type) is tracked and stored as tags in InfluxDB. Metadata is refreshed hourly and published to MQTT when enabled.
 
 ---
 
@@ -105,7 +107,7 @@ Allow different polling intervals per device based on importance/usage.
 
 ---
 
-### ⏳ Implement connection pooling for InfluxDB writes
+### ✅ Implement connection pooling for InfluxDB writes
 Reuse InfluxDB connections instead of creating new ones for each write.
 
 **Benefits:**
@@ -114,6 +116,8 @@ Reuse InfluxDB connections instead of creating new ones for each write.
 - Lower memory usage
 
 **Estimated effort:** Small
+
+**Implemented:** Connection pooling with configurable settings: `influx_max_idle_conns`, `influx_max_idle_conns_per_host`, `influx_max_conns_per_host`, and `influx_idle_conn_timeout`.
 
 ---
 
@@ -195,13 +199,13 @@ Protect devices from excessive API calls and respect manufacturer limits.
 
 ## Operational Improvements
 
-### ⏳ Add configuration reload without restart
+### ✅ Add configuration reload without restart
 Support SIGHUP signal to reload configuration without stopping data collection.
 
 **Features:**
-- Hot reload of non-critical settings
-- Add/remove devices dynamically
-- Update polling intervals on the fly
+- Hot reload of non-critical settings ✅
+- Add/remove devices dynamically ✅
+- Update polling intervals on the fly ✅
 
 **Benefits:**
 - Zero downtime configuration updates
@@ -210,15 +214,17 @@ Support SIGHUP signal to reload configuration without stopping data collection.
 
 **Estimated effort:** Medium
 
+**Implemented:** SIGHUP signal handler reloads configuration and updates polling intervals, device lists, and other settings without restarting the application.
+
 ---
 
-### ⏳ Add historical data export/backup
+### ✅ Add historical data export/backup
 Provide tools to export historical data from InfluxDB for backup or migration.
 
 **Features:**
-- Export to CSV/JSON formats
-- Date range selection
-- Per-device export
+- Export to CSV/JSON formats ✅
+- Date range selection ✅
+- Per-device export ✅
 
 **Benefits:**
 - Data portability
@@ -226,6 +232,8 @@ Provide tools to export historical data from InfluxDB for backup or migration.
 - Analysis in external tools
 
 **Estimated effort:** Medium
+
+**Implemented:** `cmd-export.go` provides a CLI tool for exporting data to JSON or CSV formats with date range and device filtering options.
 
 ---
 
@@ -304,14 +312,13 @@ Build a simple web interface for managing the application.
 
 ---
 
-### ⏳ Implement MQTT support
+### ✅ Implement MQTT support
 Publish device data to MQTT for integration with home automation systems.
 
 **Topics:**
 ```
-tapo/{device_id}/power
-tapo/{device_id}/energy
-tapo/{device_id}/status
+tapo/{device_id}/energy   (combined energy data with metadata)
+tapo/{device_id}/metadata (device information)
 ```
 
 **Benefits:**
@@ -320,6 +327,8 @@ tapo/{device_id}/status
 - IoT ecosystem compatibility
 
 **Estimated effort:** Medium
+
+**Implemented:** Full MQTT support with configurable broker URL, authentication, client ID, topic prefix, and QoS levels. Publishes energy data and device metadata to separate topics.
 
 ---
 
@@ -343,14 +352,14 @@ Extend beyond energy monitoring plugs to other Tapo devices.
 
 ## Testing & Quality
 
-### ⏳ Add integration tests with mock Tapo devices
+### ✅ Add integration tests with mock Tapo devices
 Create integration tests using mock Tapo device servers.
 
 **Coverage:**
-- Authentication flows
-- Energy data retrieval
-- Error handling
-- Retry logic
+- Authentication flows ✅
+- Energy data retrieval ✅
+- Error handling ✅
+- Retry logic ✅
 
 **Benefits:**
 - Better test coverage
@@ -358,6 +367,8 @@ Create integration tests using mock Tapo device servers.
 - Confidence in releases
 
 **Estimated effort:** Medium
+
+**Implemented:** `integration_test.go` includes comprehensive integration tests with a mock Tapo device server that simulates authentication, encryption, and device responses.
 
 ---
 
@@ -384,14 +395,14 @@ Add benchmark tests to track performance over time.
 ### High Priority (Quick Wins)
 1. ✅ Create Grafana dashboard template
 2. ✅ Add configuration validation CLI command
-3. ⏳ Implement connection pooling for InfluxDB writes
+3. ✅ Implement connection pooling for InfluxDB writes
 4. ⏳ Create Docker container and docker-compose setup
 
 ### Medium Priority (High Impact)
 1. ⏳ Implement Prometheus metrics endpoint
 2. ✅ Add data buffering with batch writes
-3. ⏳ Add device metadata tracking
-4. ⏳ Implement MQTT support
+3. ✅ Add device metadata tracking
+4. ✅ Implement MQTT support
 5. ✅ Implement alerting system (Slack)
 
 ### Lower Priority (Nice to Have)
@@ -404,6 +415,12 @@ Add benchmark tests to track performance over time.
 2. ✅ Add support for multiple InfluxDB instances (HA/failover)
 3. ✅ Add device state caching
 4. ✅ Implement rate limiting for device requests
+5. ✅ Add device metadata tracking
+6. ✅ Implement MQTT support
+7. ✅ Add configuration reload without restart (SIGHUP)
+8. ✅ Add historical data export/backup
+9. ✅ Implement connection pooling for InfluxDB writes
+10. ✅ Add integration tests with mock Tapo devices
 
 ---
 
@@ -421,10 +438,10 @@ When working on items from this list:
 ## Summary
 
 **Total Tasks:** 22
-**Completed:** 8 ✅
+**Completed:** 14 ✅
 **In Progress:** 0 🚧
-**Pending:** 14 ⏳
-**Completion Rate:** 36%
+**Pending:** 8 ⏳
+**Completion Rate:** 64%
 
 ---
 
