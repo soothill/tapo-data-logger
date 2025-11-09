@@ -32,20 +32,23 @@ import (
 )
 
 type Config struct {
-	TapoEmail       string   `json:"tapo_email"`
-	TapoPassword    string   `json:"tapo_password"`
-	PlugIPs         []string `json:"plug_ips"`
-	AutoDiscover    bool     `json:"auto_discover"`
-	DiscoveryMethod string   `json:"discovery_method"` // "mdns", "scan", or "both"
-	ScanSubnet      string   `json:"scan_subnet"`      // e.g., "192.168.1.0/24"
-	InfluxURL       string   `json:"influx_url"`
-	InfluxToken     string   `json:"influx_token"`
-	InfluxOrg       string   `json:"influx_org"`
-	InfluxBucket    string   `json:"influx_bucket"`
-	PollInterval    int      `json:"poll_interval_seconds"`
-	LogLevel        string   `json:"log_level"`        // "debug", "info", "warn", "error"
-	RequestTimeout  int      `json:"request_timeout_seconds"`
-	MaxRetries      int      `json:"max_retries"`
+	TapoEmail         string   `json:"tapo_email"`
+	TapoPassword      string   `json:"tapo_password"`
+	PlugIPs           []string `json:"plug_ips"`
+	AutoDiscover      bool     `json:"auto_discover"`
+	DiscoveryMethod   string   `json:"discovery_method"` // "mdns", "scan", or "both"
+	ScanSubnet        string   `json:"scan_subnet"`      // e.g., "192.168.1.0/24"
+	InfluxURL         string   `json:"influx_url"`
+	InfluxToken       string   `json:"influx_token"`
+	InfluxOrg         string   `json:"influx_org"`
+	InfluxBucket      string   `json:"influx_bucket"`
+	PollInterval      int      `json:"poll_interval_seconds"`
+	LogLevel          string   `json:"log_level"` // "debug", "info", "warn", "error"
+	RequestTimeout    int      `json:"request_timeout_seconds"`
+	MaxRetries        int      `json:"max_retries"`
+	SlackWebhookURL   string   `json:"slack_webhook_url"`    // Slack webhook URL for alerts
+	AlertsEnabled     bool     `json:"alerts_enabled"`       // Enable/disable alerts
+	AlertAfterFailures int     `json:"alert_after_failures"` // Consecutive failures before alerting
 }
 
 // LogLevel constants
@@ -162,6 +165,14 @@ func ValidateConfig(config *Config) error {
 	if !config.AutoDiscover && len(config.PlugIPs) == 0 {
 		return fmt.Errorf("either auto_discover must be true or plug_ips must be provided")
 	}
+	if config.AlertsEnabled {
+		if config.SlackWebhookURL == "" {
+			return fmt.Errorf("slack_webhook_url is required when alerts_enabled is true")
+		}
+		if config.AlertAfterFailures <= 0 {
+			config.AlertAfterFailures = 3 // Default to 3 consecutive failures
+		}
+	}
 	return nil
 }
 
@@ -202,6 +213,97 @@ type EnergyUsageResponse struct {
 		TodayRuntime int `json:"today_runtime"` // in minutes
 		MonthRuntime int `json:"month_runtime"` // in minutes
 	} `json:"result"`
+}
+
+// DeviceState tracks the state of a device for alerting purposes
+type DeviceState struct {
+	IP                 string
+	ConsecutiveFailures int
+	IsOnline           bool
+	LastSeen           time.Time
+	LastAlertSent      time.Time
+	AlertSent          bool
+	mu                 sync.Mutex
+}
+
+// SlackMessage represents a Slack webhook message payload
+type SlackMessage struct {
+	Text        string       `json:"text,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+type Attachment struct {
+	Color  string `json:"color,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Text   string `json:"text,omitempty"`
+	Fields []Field `json:"fields,omitempty"`
+}
+
+type Field struct {
+	Title string `json:"title,omitempty"`
+	Value string `json:"value,omitempty"`
+	Short bool   `json:"short,omitempty"`
+}
+
+// sendSlackNotification sends a notification to Slack
+func sendSlackNotification(webhookURL, deviceIP, status, message string) error {
+	if webhookURL == "" {
+		return fmt.Errorf("slack webhook URL is empty")
+	}
+
+	color := "#36a64f" // Green for online
+	if status == "offline" {
+		color = "#ff0000" // Red for offline
+	}
+
+	slackMsg := SlackMessage{
+		Attachments: []Attachment{
+			{
+				Color: color,
+				Title: fmt.Sprintf("Tapo Device %s Alert", status),
+				Fields: []Field{
+					{
+						Title: "Device IP",
+						Value: deviceIP,
+						Short: true,
+					},
+					{
+						Title: "Status",
+						Value: strings.ToUpper(status),
+						Short: true,
+					},
+					{
+						Title: "Message",
+						Value: message,
+						Short: false,
+					},
+					{
+						Title: "Timestamp",
+						Value: time.Now().Format("2006-01-02 15:04:05 MST"),
+						Short: false,
+					},
+				},
+			},
+		},
+	}
+
+	payload, err := json.Marshal(slackMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Slack message: %w", err)
+	}
+
+	resp, err := http.Post(webhookURL, "application/json", bytes.NewBuffer(payload))
+	if err != nil {
+		return fmt.Errorf("failed to send Slack notification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("slack webhook returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 func NewTapoClient(ip, email, password string, timeout time.Duration, maxRetries int) *TapoClient {
@@ -898,6 +1000,17 @@ func main() {
 	logger.Info("Request timeout: %d seconds", config.RequestTimeout)
 	logger.Info("Max retries: %d", config.MaxRetries)
 
+	// Initialize device state tracking
+	deviceStates := make(map[string]*DeviceState)
+	var deviceStatesMu sync.Mutex
+
+	if config.AlertsEnabled {
+		logger.Info("Alerts enabled via Slack webhook")
+		logger.Info("Alert threshold: %d consecutive failures", config.AlertAfterFailures)
+	} else {
+		logger.Info("Alerts disabled")
+	}
+
 	// Rediscover plugs periodically (every hour)
 	var wg sync.WaitGroup
 	if config.AutoDiscover {
@@ -955,10 +1068,24 @@ func main() {
 	// Initial collection
 	plugIPsMu.Lock()
 	for _, plugIP := range plugIPs {
+		// Initialize device state if not exists
+		deviceStatesMu.Lock()
+		if _, exists := deviceStates[plugIP]; !exists {
+			deviceStates[plugIP] = &DeviceState{
+				IP:       plugIP,
+				IsOnline: true,
+				LastSeen: time.Now(),
+			}
+		}
+		deviceStatesMu.Unlock()
+
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			collectAndLog(ctx, ip, config.TapoEmail, config.TapoPassword, writeAPI, timeout, config.MaxRetries)
+			deviceStatesMu.Lock()
+			state := deviceStates[ip]
+			deviceStatesMu.Unlock()
+			collectAndLog(ctx, ip, config.TapoEmail, config.TapoPassword, writeAPI, timeout, config.MaxRetries, state, &config)
 		}(plugIP)
 	}
 	plugIPsMu.Unlock()
@@ -980,24 +1107,62 @@ func main() {
 			plugIPsMu.Unlock()
 
 			for _, plugIP := range currentPlugs {
+				// Initialize device state if not exists (for newly discovered devices)
+				deviceStatesMu.Lock()
+				if _, exists := deviceStates[plugIP]; !exists {
+					deviceStates[plugIP] = &DeviceState{
+						IP:       plugIP,
+						IsOnline: true,
+						LastSeen: time.Now(),
+					}
+				}
+				state := deviceStates[plugIP]
+				deviceStatesMu.Unlock()
+
 				wg.Add(1)
-				go func(ip string) {
+				go func(ip string, ds *DeviceState) {
 					defer wg.Done()
-					collectAndLog(ctx, ip, config.TapoEmail, config.TapoPassword, writeAPI, timeout, config.MaxRetries)
-				}(plugIP)
+					collectAndLog(ctx, ip, config.TapoEmail, config.TapoPassword, writeAPI, timeout, config.MaxRetries, ds, &config)
+				}(plugIP, state)
 			}
 		}
 	}
 }
 
-func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI api.WriteAPIBlocking, timeout time.Duration, maxRetries int) {
+func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI api.WriteAPIBlocking, timeout time.Duration, maxRetries int, deviceState *DeviceState, config *Config) {
 	client := NewTapoClient(plugIP, email, password, timeout, maxRetries)
 
 	energy, err := client.GetEnergyUsageWithContext(ctx)
+
+	deviceState.mu.Lock()
+	defer deviceState.mu.Unlock()
+
 	if err != nil {
 		logger.Error("[%s] Failed to get energy usage: %v", plugIP, err)
+		deviceState.ConsecutiveFailures++
+
+		// Check if we should send an alert
+		if config.AlertsEnabled && !deviceState.AlertSent && deviceState.ConsecutiveFailures >= config.AlertAfterFailures {
+			message := fmt.Sprintf("Device has been offline for %d consecutive poll attempts. Last seen: %s. Error: %v",
+				deviceState.ConsecutiveFailures,
+				deviceState.LastSeen.Format("2006-01-02 15:04:05 MST"),
+				err)
+
+			if slackErr := sendSlackNotification(config.SlackWebhookURL, plugIP, "offline", message); slackErr != nil {
+				logger.Error("[%s] Failed to send Slack notification: %v", plugIP, slackErr)
+			} else {
+				logger.Info("[%s] Offline alert sent to Slack", plugIP)
+				deviceState.AlertSent = true
+				deviceState.LastAlertSent = time.Now()
+			}
+		}
+
+		deviceState.IsOnline = false
 		return
 	}
+
+	// Device is online - check if we need to send a recovery notification
+	wasOffline := !deviceState.IsOnline || deviceState.AlertSent
 
 	if err := writeToInflux(writeAPI, plugIP, energy); err != nil {
 		logger.Error("[%s] Failed to write to InfluxDB: %v", plugIP, err)
@@ -1009,5 +1174,24 @@ func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI
 		float64(energy.Result.CurrentPower)/1000.0,
 		float64(energy.Result.TodayEnergy)/1000.0,
 	)
+
+	// Update device state to online
+	if wasOffline && config.AlertsEnabled && deviceState.AlertSent {
+		downtime := time.Since(deviceState.LastSeen)
+		message := fmt.Sprintf("Device is back online after being offline for %v (failed %d consecutive polls)",
+			downtime.Round(time.Second),
+			deviceState.ConsecutiveFailures)
+
+		if slackErr := sendSlackNotification(config.SlackWebhookURL, plugIP, "online", message); slackErr != nil {
+			logger.Error("[%s] Failed to send recovery notification: %v", plugIP, slackErr)
+		} else {
+			logger.Info("[%s] Recovery alert sent to Slack", plugIP)
+		}
+	}
+
+	deviceState.IsOnline = true
+	deviceState.ConsecutiveFailures = 0
+	deviceState.AlertSent = false
+	deviceState.LastSeen = time.Now()
 }
 
