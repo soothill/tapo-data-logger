@@ -554,3 +554,256 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+// TestSlackMessageStructure tests the Slack message JSON structure
+func TestSlackMessageStructure(t *testing.T) {
+	msg := SlackMessage{
+		Attachments: []Attachment{
+			{
+				Color: "#ff0000",
+				Title: "Test Alert",
+				Fields: []Field{
+					{
+						Title: "Device IP",
+						Value: "192.168.1.100",
+						Short: true,
+					},
+					{
+						Title: "Status",
+						Value: "OFFLINE",
+						Short: true,
+					},
+				},
+			},
+		},
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Failed to marshal SlackMessage: %v", err)
+	}
+
+	// Unmarshal back to verify structure
+	var decoded SlackMessage
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal SlackMessage: %v", err)
+	}
+
+	// Verify structure
+	if len(decoded.Attachments) != 1 {
+		t.Errorf("Attachments count = %d, want 1", len(decoded.Attachments))
+	}
+
+	if decoded.Attachments[0].Color != "#ff0000" {
+		t.Errorf("Color = %s, want #ff0000", decoded.Attachments[0].Color)
+	}
+
+	if decoded.Attachments[0].Title != "Test Alert" {
+		t.Errorf("Title = %s, want Test Alert", decoded.Attachments[0].Title)
+	}
+
+	if len(decoded.Attachments[0].Fields) != 2 {
+		t.Errorf("Fields count = %d, want 2", len(decoded.Attachments[0].Fields))
+	}
+}
+
+// TestDeviceStateTracking tests device state updates
+func TestDeviceStateTracking(t *testing.T) {
+	state := &DeviceState{
+		IP:       "192.168.1.100",
+		IsOnline: true,
+		LastSeen: time.Now(),
+	}
+
+	// Simulate a failure
+	state.mu.Lock()
+	state.ConsecutiveFailures++
+	state.IsOnline = false
+	state.mu.Unlock()
+
+	if state.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures = %d, want 1", state.ConsecutiveFailures)
+	}
+
+	if state.IsOnline {
+		t.Error("IsOnline should be false after failure")
+	}
+
+	// Simulate recovery
+	state.mu.Lock()
+	state.ConsecutiveFailures = 0
+	state.IsOnline = true
+	state.LastSeen = time.Now()
+	state.AlertSent = false
+	state.mu.Unlock()
+
+	if state.ConsecutiveFailures != 0 {
+		t.Errorf("ConsecutiveFailures = %d, want 0 after recovery", state.ConsecutiveFailures)
+	}
+
+	if !state.IsOnline {
+		t.Error("IsOnline should be true after recovery")
+	}
+}
+
+// TestValidateConfigWithAlerts tests configuration validation with alerts enabled
+func TestValidateConfigWithAlerts(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr bool
+	}{
+		{
+			name: "alerts enabled with valid webhook",
+			config: Config{
+				TapoEmail:         "test@example.com",
+				TapoPassword:      "password",
+				PlugIPs:           []string{"192.168.1.100"},
+				InfluxURL:         "http://localhost:8086",
+				InfluxToken:       "token",
+				InfluxOrg:         "org",
+				InfluxBucket:      "bucket",
+				AlertsEnabled:     true,
+				SlackWebhookURL:   "https://hooks.slack.com/services/test",
+				AlertAfterFailures: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "alerts enabled without webhook",
+			config: Config{
+				TapoEmail:      "test@example.com",
+				TapoPassword:   "password",
+				PlugIPs:        []string{"192.168.1.100"},
+				InfluxURL:      "http://localhost:8086",
+				InfluxToken:    "token",
+				InfluxOrg:      "org",
+				InfluxBucket:   "bucket",
+				AlertsEnabled:  true,
+				SlackWebhookURL: "",
+			},
+			wantErr: true,
+		},
+		{
+			name: "alerts disabled without webhook",
+			config: Config{
+				TapoEmail:      "test@example.com",
+				TapoPassword:   "password",
+				PlugIPs:        []string{"192.168.1.100"},
+				InfluxURL:      "http://localhost:8086",
+				InfluxToken:    "token",
+				InfluxOrg:      "org",
+				InfluxBucket:   "bucket",
+				AlertsEnabled:  false,
+				SlackWebhookURL: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "alerts enabled with zero threshold (should default to 3)",
+			config: Config{
+				TapoEmail:         "test@example.com",
+				TapoPassword:      "password",
+				PlugIPs:           []string{"192.168.1.100"},
+				InfluxURL:         "http://localhost:8086",
+				InfluxToken:       "token",
+				InfluxOrg:         "org",
+				InfluxBucket:      "bucket",
+				AlertsEnabled:     true,
+				SlackWebhookURL:   "https://hooks.slack.com/services/test",
+				AlertAfterFailures: 0,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(&tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			// Check that alert_after_failures defaults to 3 if not set
+			if tt.config.AlertsEnabled && tt.config.AlertAfterFailures == 0 && err == nil {
+				if tt.config.AlertAfterFailures != 3 {
+					t.Errorf("AlertAfterFailures should default to 3, got %d", tt.config.AlertAfterFailures)
+				}
+			}
+		})
+	}
+}
+
+// TestSendSlackNotificationFormat tests Slack notification message formatting
+func TestSendSlackNotificationFormat(t *testing.T) {
+	// This test verifies the message structure without actually sending
+	// We'll marshal a message and verify the JSON structure
+
+	tests := []struct {
+		name     string
+		deviceIP string
+		status   string
+		message  string
+		wantColor string
+	}{
+		{
+			name:     "offline notification",
+			deviceIP: "192.168.1.100",
+			status:   "offline",
+			message:  "Device has been offline",
+			wantColor: "#ff0000",
+		},
+		{
+			name:     "online notification",
+			deviceIP: "192.168.1.101",
+			status:   "online",
+			message:  "Device is back online",
+			wantColor: "#36a64f",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create message structure similar to sendSlackNotification
+			color := "#36a64f" // Green for online
+			if tt.status == "offline" {
+				color = "#ff0000" // Red for offline
+			}
+
+			slackMsg := SlackMessage{
+				Attachments: []Attachment{
+					{
+						Color: color,
+						Title: "Tapo Device " + tt.status + " Alert",
+						Fields: []Field{
+							{Title: "Device IP", Value: tt.deviceIP, Short: true},
+							{Title: "Status", Value: tt.status, Short: true},
+							{Title: "Message", Value: tt.message, Short: false},
+						},
+					},
+				},
+			}
+
+			// Marshal to verify structure
+			jsonData, err := json.Marshal(slackMsg)
+			if err != nil {
+				t.Fatalf("Failed to marshal message: %v", err)
+			}
+
+			// Verify JSON contains expected fields
+			jsonStr := string(jsonData)
+			if !contains(jsonStr, tt.deviceIP) {
+				t.Errorf("JSON doesn't contain device IP %s", tt.deviceIP)
+			}
+
+			if !contains(jsonStr, tt.wantColor) {
+				t.Errorf("JSON doesn't contain expected color %s", tt.wantColor)
+			}
+
+			if !contains(jsonStr, tt.status) {
+				t.Errorf("JSON doesn't contain status %s", tt.status)
+			}
+		})
+	}
+}

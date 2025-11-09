@@ -50,12 +50,20 @@
   "request_timeout_seconds": 10,
   "max_retries": 3,
 
+  "_comment_alerts": "Slack alerting configuration",
+  "slack_webhook_url": "",
+  "alerts_enabled": false,
+  "alert_after_failures": 3,
+
   "_comment_descriptions": {
     "batch_write_size": "Number of data points to batch before writing to InfluxDB (default: 100)",
     "batch_write_interval": "Maximum seconds to wait before flushing batch (default: 10)",
     "max_concurrent": "Maximum concurrent device requests (0 = unlimited, default: 0)",
     "cache_ttl_seconds": "Device state cache TTL in seconds (0 = disabled, default: 0)",
     "device_poll_intervals": "Override default poll interval for specific devices (IP -> seconds)",
-    "influx_urls": "Multiple InfluxDB instances for HA/failover (lower priority = higher preference)"
+    "influx_urls": "Multiple InfluxDB instances for HA/failover (lower priority = higher preference)",
+    "slack_webhook_url": "Slack webhook URL for device offline alerts",
+    "alerts_enabled": "Enable Slack alerts for device failures",
+    "alert_after_failures": "Number of consecutive failures before sending alert"
   }
 }

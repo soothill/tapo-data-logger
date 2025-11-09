@@ -53,6 +53,9 @@ type Config struct {
 	BatchWriteInterval int                       `json:"batch_write_interval"` // Max seconds to wait before flushing batch
 	MaxConcurrent      int                       `json:"max_concurrent"`       // Max concurrent device requests (0 = unlimited)
 	CacheTTL           int                       `json:"cache_ttl_seconds"`    // Device state cache TTL in seconds (0 = disabled)
+	SlackWebhookURL    string                    `json:"slack_webhook_url"`    // Slack webhook URL for alerts
+	AlertsEnabled      bool                      `json:"alerts_enabled"`       // Enable/disable alerts
+	AlertAfterFailures int                       `json:"alert_after_failures"` // Consecutive failures before alerting
 }
 
 type InfluxDBInstance struct {
@@ -213,6 +216,14 @@ func ValidateConfig(config *Config) error {
 	}
 	if !config.AutoDiscover && len(config.PlugIPs) == 0 {
 		return fmt.Errorf("either auto_discover must be true or plug_ips must be provided")
+	}
+	if config.AlertsEnabled {
+		if config.SlackWebhookURL == "" {
+			return fmt.Errorf("slack_webhook_url is required when alerts_enabled is true")
+		}
+		if config.AlertAfterFailures <= 0 {
+			config.AlertAfterFailures = 3 // Default to 3 consecutive failures
+		}
 	}
 	return nil
 }
@@ -434,6 +445,97 @@ func (im *InfluxDBManager) CheckHealth(ctx context.Context) error {
 
 func (im *InfluxDBManager) Close() {
 	im.client.Close()
+}
+
+// DeviceState tracks the state of a device for alerting purposes
+type DeviceState struct {
+	IP                  string
+	ConsecutiveFailures int
+	IsOnline            bool
+	LastSeen            time.Time
+	LastAlertSent       time.Time
+	AlertSent           bool
+	mu                  sync.Mutex
+}
+
+// SlackMessage represents a Slack webhook message payload
+type SlackMessage struct {
+	Text        string       `json:"text,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+type Attachment struct {
+	Color  string  `json:"color,omitempty"`
+	Title  string  `json:"title,omitempty"`
+	Text   string  `json:"text,omitempty"`
+	Fields []Field `json:"fields,omitempty"`
+}
+
+type Field struct {
+	Title string `json:"title,omitempty"`
+	Value string `json:"value,omitempty"`
+	Short bool   `json:"short,omitempty"`
+}
+
+// sendSlackNotification sends a notification to Slack
+func sendSlackNotification(webhookURL, deviceIP, status, message string) error {
+	if webhookURL == "" {
+		return fmt.Errorf("slack webhook URL is empty")
+	}
+
+	color := "#36a64f" // Green for online
+	if status == "offline" {
+		color = "#ff0000" // Red for offline
+	}
+
+	slackMsg := SlackMessage{
+		Attachments: []Attachment{
+			{
+				Color: color,
+				Title: fmt.Sprintf("Tapo Device %s Alert", status),
+				Fields: []Field{
+					{
+						Title: "Device IP",
+						Value: deviceIP,
+						Short: true,
+					},
+					{
+						Title: "Status",
+						Value: strings.ToUpper(status),
+						Short: true,
+					},
+					{
+						Title: "Message",
+						Value: message,
+						Short: false,
+					},
+					{
+						Title: "Timestamp",
+						Value: time.Now().Format("2006-01-02 15:04:05 MST"),
+						Short: false,
+					},
+				},
+			},
+		},
+	}
+
+	payload, err := json.Marshal(slackMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Slack message: %w", err)
+	}
+
+	resp, err := http.Post(webhookURL, "application/json", bytes.NewBuffer(payload))
+	if err != nil {
+		return fmt.Errorf("failed to send Slack notification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("slack webhook returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // RateLimiter manages concurrent device requests
@@ -1269,6 +1371,17 @@ func main() {
 		logger.Info("Device-specific poll intervals configured for %d device(s)", len(config.DevicePollInterval))
 	}
 
+	// Initialize device state tracking
+	deviceStates := make(map[string]*DeviceState)
+	var deviceStatesMu sync.Mutex
+
+	if config.AlertsEnabled {
+		logger.Info("Alerts enabled via Slack webhook")
+		logger.Info("Alert threshold: %d consecutive failures", config.AlertAfterFailures)
+	} else {
+		logger.Info("Alerts disabled")
+	}
+
 	// Rediscover plugs periodically (every hour)
 	if config.AutoDiscover {
 		wg.Add(1)
@@ -1330,9 +1443,24 @@ func main() {
 	// Start polling goroutine for each device with its own ticker
 	plugIPsMu.Lock()
 	for _, plugIP := range plugIPs {
+		// Initialize device state if not exists
+		deviceStatesMu.Lock()
+		if _, exists := deviceStates[plugIP]; !exists {
+			deviceStates[plugIP] = &DeviceState{
+				IP:       plugIP,
+				IsOnline: true,
+				LastSeen: time.Now(),
+			}
+		}
+		deviceStatesMu.Unlock()
+
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
+
+			deviceStatesMu.Lock()
+			state := deviceStates[ip]
+			deviceStatesMu.Unlock()
 
 			interval := getPollInterval(ip)
 			logger.Info("[%s] Starting polling with interval: %v", ip, interval)
@@ -1342,7 +1470,7 @@ func main() {
 
 			// Initial collection
 			collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
-				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries)
+				pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config)
 
 			// Periodic collection
 			for {
@@ -1352,7 +1480,7 @@ func main() {
 					return
 				case <-ticker.C:
 					collectAndLogBuffered(ctx, ip, config.TapoEmail, config.TapoPassword,
-						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries)
+						pointBuffer, deviceCache, rateLimiter, timeout, config.MaxRetries, state, &config)
 				}
 			}
 		}(plugIP)
@@ -1367,14 +1495,40 @@ func main() {
 	logger.Info("Graceful shutdown complete")
 }
 
-func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI api.WriteAPIBlocking, timeout time.Duration, maxRetries int) {
+func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI api.WriteAPIBlocking, timeout time.Duration, maxRetries int, deviceState *DeviceState, config *Config) {
 	client := NewTapoClient(plugIP, email, password, timeout, maxRetries)
 
 	energy, err := client.GetEnergyUsageWithContext(ctx)
+
+	deviceState.mu.Lock()
+	defer deviceState.mu.Unlock()
+
 	if err != nil {
 		logger.Error("[%s] Failed to get energy usage: %v", plugIP, err)
+		deviceState.ConsecutiveFailures++
+
+		// Check if we should send an alert
+		if config.AlertsEnabled && !deviceState.AlertSent && deviceState.ConsecutiveFailures >= config.AlertAfterFailures {
+			message := fmt.Sprintf("Device has been offline for %d consecutive poll attempts. Last seen: %s. Error: %v",
+				deviceState.ConsecutiveFailures,
+				deviceState.LastSeen.Format("2006-01-02 15:04:05 MST"),
+				err)
+
+			if slackErr := sendSlackNotification(config.SlackWebhookURL, plugIP, "offline", message); slackErr != nil {
+				logger.Error("[%s] Failed to send Slack notification: %v", plugIP, slackErr)
+			} else {
+				logger.Info("[%s] Offline alert sent to Slack", plugIP)
+				deviceState.AlertSent = true
+				deviceState.LastAlertSent = time.Now()
+			}
+		}
+
+		deviceState.IsOnline = false
 		return
 	}
+
+	// Device is online - check if we need to send a recovery notification
+	wasOffline := !deviceState.IsOnline || deviceState.AlertSent
 
 	if err := writeToInflux(writeAPI, plugIP, energy); err != nil {
 		logger.Error("[%s] Failed to write to InfluxDB: %v", plugIP, err)
@@ -1386,12 +1540,31 @@ func collectAndLog(ctx context.Context, plugIP, email, password string, writeAPI
 		float64(energy.Result.CurrentPower)/1000.0,
 		float64(energy.Result.TodayEnergy)/1000.0,
 	)
+
+	// Update device state to online
+	if wasOffline && config.AlertsEnabled && deviceState.AlertSent {
+		downtime := time.Since(deviceState.LastSeen)
+		message := fmt.Sprintf("Device is back online after being offline for %v (failed %d consecutive polls)",
+			downtime.Round(time.Second),
+			deviceState.ConsecutiveFailures)
+
+		if slackErr := sendSlackNotification(config.SlackWebhookURL, plugIP, "online", message); slackErr != nil {
+			logger.Error("[%s] Failed to send recovery notification: %v", plugIP, slackErr)
+		} else {
+			logger.Info("[%s] Recovery alert sent to Slack", plugIP)
+		}
+	}
+
+	deviceState.IsOnline = true
+	deviceState.ConsecutiveFailures = 0
+	deviceState.AlertSent = false
+	deviceState.LastSeen = time.Now()
 }
 
 // collectAndLogBuffered collects energy data with caching, buffering, and rate limiting
 func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 	buffer *PointBuffer, cache *DeviceCache, limiter *RateLimiter,
-	timeout time.Duration, maxRetries int) {
+	timeout time.Duration, maxRetries int, deviceState *DeviceState, config *Config) {
 
 	// Acquire rate limiter token
 	if limiter != nil {
@@ -1412,21 +1585,46 @@ func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 	}
 
 	// If not in cache, fetch from device
+	var err error
 	if energy == nil {
 		client := NewTapoClient(plugIP, email, password, timeout, maxRetries)
-
-		var err error
 		energy, err = client.GetEnergyUsageWithContext(ctx)
-		if err != nil {
-			logger.Error("[%s] Failed to get energy usage: %v", plugIP, err)
-			return
+	}
+
+	deviceState.mu.Lock()
+	defer deviceState.mu.Unlock()
+
+	if err != nil {
+		logger.Error("[%s] Failed to get energy usage: %v", plugIP, err)
+		deviceState.ConsecutiveFailures++
+
+		// Check if we should send an alert
+		if config.AlertsEnabled && !deviceState.AlertSent && deviceState.ConsecutiveFailures >= config.AlertAfterFailures {
+			message := fmt.Sprintf("Device has been offline for %d consecutive poll attempts. Last seen: %s. Error: %v",
+				deviceState.ConsecutiveFailures,
+				deviceState.LastSeen.Format("2006-01-02 15:04:05 MST"),
+				err)
+
+			if slackErr := sendSlackNotification(config.SlackWebhookURL, plugIP, "offline", message); slackErr != nil {
+				logger.Error("[%s] Failed to send Slack notification: %v", plugIP, slackErr)
+			} else {
+				logger.Info("[%s] Offline alert sent to Slack", plugIP)
+				deviceState.AlertSent = true
+				deviceState.LastAlertSent = time.Now()
+			}
 		}
 
-		// Store in cache
-		if cache != nil {
-			cache.Set(plugIP, energy)
-		}
+		deviceState.IsOnline = false
+		return
 	}
+
+	// Store in cache if not from cache
+	if !fromCache && cache != nil {
+		cache.Set(plugIP, energy)
+	}
+
+	// Device is online - check if we need to send a recovery notification
+	wasOffline := !deviceState.IsOnline || deviceState.AlertSent
 
 	// Create InfluxDB point
 	point := createInfluxPoint(plugIP, energy)
@@ -1448,5 +1646,24 @@ func collectAndLogBuffered(ctx context.Context, plugIP, email, password string,
 		float64(energy.Result.TodayEnergy)/1000.0,
 		cacheStatus,
 	)
+
+	// Update device state to online
+	if wasOffline && config.AlertsEnabled && deviceState.AlertSent {
+		downtime := time.Since(deviceState.LastSeen)
+		message := fmt.Sprintf("Device is back online after being offline for %v (failed %d consecutive polls)",
+			downtime.Round(time.Second),
+			deviceState.ConsecutiveFailures)
+
+		if slackErr := sendSlackNotification(config.SlackWebhookURL, plugIP, "online", message); slackErr != nil {
+			logger.Error("[%s] Failed to send recovery notification: %v", plugIP, slackErr)
+		} else {
+			logger.Info("[%s] Recovery alert sent to Slack", plugIP)
+		}
+	}
+
+	deviceState.IsOnline = true
+	deviceState.ConsecutiveFailures = 0
+	deviceState.AlertSent = false
+	deviceState.LastSeen = time.Now()
 }
 
