@@ -1,0 +1,45 @@
+# Standalone Docker Compose setup for tapo-data-logger
+# Use this when you already have InfluxDB and Grafana running externally
+
+version: '3.8'
+
+services:
+  # Tapo Data Logger application (standalone mode)
+  tapo-logger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tapo-data-logger
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # Web UI
+    volumes:
+      - ./config.json:/app/config.json:ro
+    environment:
+      - TZ=UTC
+      - CONFIG_FILE=/app/config.json
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    # Optional: Run with limited privileges
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    # Optional: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    # Network mode options:
+    # - Use 'host' mode if InfluxDB is on localhost
+    # - Use 'bridge' mode (default) if InfluxDB is on another host
+    # Uncomment the line below to use host networking:
+    # network_mode: "host"

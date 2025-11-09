@@ -1,0 +1,48 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+.github
+
+# Documentation
+*.md
+!README.md
+GRAFANA.md
+TODO.md
+
+# Test files
+*_test.go
+benchmark_test.go
+integration_test.go
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+tapo-data-logger
+*.test
+*.out
+
+# Config files (users will mount their own)
+config.json
+*.json.bak
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Scripts and utilities (not needed in container)
+*.sh
+tapo-logger.service
+
+# Misc
+coverage.txt
+coverage.html
+.env
+.env.*
