@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -33,6 +34,7 @@ type MockTapoDevice struct {
 	publicKey     *rsa.PublicKey
 	clientPubKey  *rsa.PublicKey // Client's public key from handshake
 	token         string
+	mu            sync.RWMutex    // Protects concurrent access to fields below
 	// Configurable responses
 	CurrentPower int
 	TodayEnergy  int
@@ -71,6 +73,27 @@ func NewMockTapoDevice() *MockTapoDevice {
 // Close closes the mock server
 func (m *MockTapoDevice) Close() {
 	m.server.Close()
+}
+
+// SetShouldFailHandshake sets whether handshake should fail (thread-safe)
+func (m *MockTapoDevice) SetShouldFailHandshake(shouldFail bool) {
+	m.mu.Lock()
+	m.ShouldFailHandshake = shouldFail
+	m.mu.Unlock()
+}
+
+// SetShouldFailLogin sets whether login should fail (thread-safe)
+func (m *MockTapoDevice) SetShouldFailLogin(shouldFail bool) {
+	m.mu.Lock()
+	m.ShouldFailLogin = shouldFail
+	m.mu.Unlock()
+}
+
+// SetShouldFailEnergy sets whether energy retrieval should fail (thread-safe)
+func (m *MockTapoDevice) SetShouldFailEnergy(shouldFail bool) {
+	m.mu.Lock()
+	m.ShouldFailEnergy = shouldFail
+	m.mu.Unlock()
 }
 
 // GetURL returns the mock server URL
@@ -114,7 +137,11 @@ func (m *MockTapoDevice) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 // handleHandshake handles the handshake request
 func (m *MockTapoDevice) handleHandshake(w http.ResponseWriter, r *http.Request, request map[string]interface{}) {
-	if m.ShouldFailHandshake {
+	m.mu.RLock()
+	shouldFail := m.ShouldFailHandshake
+	m.mu.RUnlock()
+
+	if shouldFail {
 		response := map[string]interface{}{
 			"error_code": -1,
 		}
@@ -217,7 +244,11 @@ func (m *MockTapoDevice) handleSecurePassthrough(w http.ResponseWriter, r *http.
 
 // handleLogin handles the login request
 func (m *MockTapoDevice) handleLogin(w http.ResponseWriter, r *http.Request, innerRequest map[string]interface{}) {
-	if m.ShouldFailLogin {
+	m.mu.RLock()
+	shouldFail := m.ShouldFailLogin
+	m.mu.RUnlock()
+
+	if shouldFail {
 		response := map[string]interface{}{
 			"error_code": -1001,
 		}
@@ -251,7 +282,16 @@ func (m *MockTapoDevice) handleLogin(w http.ResponseWriter, r *http.Request, inn
 // This is a simplified mock that returns unencrypted data
 // In a real scenario, this would use the same AES key as the request
 func (m *MockTapoDevice) handleEnergyUsage(w http.ResponseWriter, r *http.Request) {
-	if m.ShouldFailEnergy {
+	m.mu.RLock()
+	shouldFail := m.ShouldFailEnergy
+	currentPower := m.CurrentPower
+	todayEnergy := m.TodayEnergy
+	monthEnergy := m.MonthEnergy
+	todayRuntime := m.TodayRuntime
+	monthRuntime := m.MonthRuntime
+	m.mu.RUnlock()
+
+	if shouldFail {
 		response := map[string]interface{}{
 			"error_code": -1,
 		}
@@ -263,11 +303,11 @@ func (m *MockTapoDevice) handleEnergyUsage(w http.ResponseWriter, r *http.Reques
 	energyResult := map[string]interface{}{
 		"error_code": 0,
 		"result": map[string]interface{}{
-			"current_power": m.CurrentPower,
-			"today_energy":  m.TodayEnergy,
-			"month_energy":  m.MonthEnergy,
-			"today_runtime": m.TodayRuntime,
-			"month_runtime": m.MonthRuntime,
+			"current_power": currentPower,
+			"today_energy":  todayEnergy,
+			"month_energy":  monthEnergy,
+			"today_runtime": todayRuntime,
+			"month_runtime": monthRuntime,
 		},
 	}
 
@@ -352,7 +392,7 @@ func TestMockTapoDeviceHandshakeFailure(t *testing.T) {
 	mock := NewMockTapoDevice()
 	defer mock.Close()
 
-	mock.ShouldFailHandshake = true
+	mock.SetShouldFailHandshake(true)
 
 	client := NewTapoClient(mock.GetIP(), "test@example.com", "password", 10*time.Second, 0)
 
@@ -477,7 +517,7 @@ func TestMockDeviceRetry(t *testing.T) {
 	defer mock.Close()
 
 	// Make handshake fail initially
-	mock.ShouldFailHandshake = true
+	mock.SetShouldFailHandshake(true)
 
 	client := NewTapoClient(mock.GetIP(), "test@example.com", "password", 5*time.Second, 2)
 
@@ -489,7 +529,7 @@ func TestMockDeviceRetry(t *testing.T) {
 
 	// After a short delay, make handshake succeed
 	time.Sleep(100 * time.Millisecond)
-	mock.ShouldFailHandshake = false
+	mock.SetShouldFailHandshake(false)
 
 	// Wait for result
 	select {
