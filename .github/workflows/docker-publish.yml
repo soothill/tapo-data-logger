@@ -15,8 +15,36 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Display coverage
+        run: go tool cover -func=coverage.out
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: read
       packages: write
