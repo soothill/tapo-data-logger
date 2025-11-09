@@ -11,6 +11,8 @@ A Go application that collects power consumption data from TP-Link Tapo smart pl
 - Multiple plug support with automatic re-discovery
 - Configurable polling interval
 - Concurrent data collection from multiple plugs
+- **Device offline detection** with Slack notifications
+- Automatic recovery notifications when devices come back online
 
 ## Prerequisites
 
@@ -46,7 +48,10 @@ cp config.example.json config.json
   "influx_token": "your-influxdb-token",
   "influx_org": "your-org",
   "influx_bucket": "tapo_energy",
-  "poll_interval_seconds": 60
+  "poll_interval_seconds": 60,
+  "slack_webhook_url": "",
+  "alerts_enabled": false,
+  "alert_after_failures": 3
 }
 ```
 
@@ -81,11 +86,14 @@ The application can automatically discover Tapo plugs on your network using thre
 | `discovery_method` | Discovery method: "mdns", "scan", or "both" | `"both"` |
 | `scan_subnet` | Subnet to scan (CIDR notation) | `""` |
 | `plug_ips` | Manually specify plug IPs (optional if auto-discovery is enabled) | `[]` |
+| `alerts_enabled` | Enable Slack alerts for offline devices | `false` |
+| `slack_webhook_url` | Slack webhook URL for notifications | `""` |
+| `alert_after_failures` | Number of consecutive failures before alerting | `3` |
 
 **Notes:**
 - You can combine auto-discovery with manual IPs - both will be monitored
 - The app re-discovers plugs every hour to find new devices
-- If a plug becomes unreachable, it will be skipped until the next poll
+- If a plug becomes unreachable, it will be tracked and can trigger alerts if enabled
 
 ### Finding Your Subnet
 
@@ -107,6 +115,41 @@ You can find the IP addresses of your Tapo plugs in several ways:
 - Use network scanning tools like `nmap` or `arp-scan`
 
 It's recommended to assign static IP addresses to your plugs in your router's DHCP settings.
+
+### Slack Alerts Configuration
+
+The application can send Slack notifications when devices go offline or come back online.
+
+**Setting up Slack alerts:**
+
+1. Create a Slack webhook:
+   - Go to https://api.slack.com/apps
+   - Create a new app or select an existing one
+   - Navigate to "Incoming Webhooks"
+   - Activate incoming webhooks and create a new webhook URL
+   - Copy the webhook URL
+
+2. Configure alerts in `config.json`:
+```json
+{
+  "alerts_enabled": true,
+  "slack_webhook_url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+  "alert_after_failures": 3
+}
+```
+
+**How it works:**
+- The application tracks consecutive polling failures for each device
+- After N consecutive failures (default: 3), an **offline alert** is sent to Slack
+- When the device comes back online, a **recovery notification** is sent
+- This prevents false alerts from temporary network glitches
+
+**Alert messages include:**
+- Device IP address
+- Status (OFFLINE or ONLINE)
+- Duration of downtime (for recovery notifications)
+- Number of failed poll attempts
+- Timestamp
 
 ### InfluxDB Setup
 

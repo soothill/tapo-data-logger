@@ -12,6 +12,9 @@
   "poll_interval_seconds": 60,
   "log_level": "info",
   "request_timeout_seconds": 10,
-  "max_retries": 3
+  "max_retries": 3,
+  "slack_webhook_url": "",
+  "alerts_enabled": false,
+  "alert_after_failures": 3
 }
 
