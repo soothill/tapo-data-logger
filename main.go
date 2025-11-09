@@ -64,6 +64,11 @@ type Config struct {
 	MQTTClientID       string                    `json:"mqtt_client_id"`       // MQTT client ID (optional, auto-generated if empty)
 	MQTTTopicPrefix    string                    `json:"mqtt_topic_prefix"`    // MQTT topic prefix (default: "tapo")
 	MQTTQoS            int                       `json:"mqtt_qos"`             // MQTT QoS level (0, 1, or 2)
+	// Connection pool settings for InfluxDB
+	InfluxMaxIdleConns        int `json:"influx_max_idle_conns"`         // Max idle connections across all hosts (0 = use default)
+	InfluxMaxIdleConnsPerHost int `json:"influx_max_idle_conns_per_host"` // Max idle connections per host (0 = use default)
+	InfluxMaxConnsPerHost     int `json:"influx_max_conns_per_host"`     // Max total connections per host (0 = unlimited)
+	InfluxIdleConnTimeout     int `json:"influx_idle_conn_timeout"`      // Idle connection timeout in seconds (0 = 90s default)
 }
 
 type InfluxDBInstance struct {
@@ -455,8 +460,50 @@ type InfluxDBManager struct {
 	healthy  bool
 }
 
-func NewInfluxDBManager(instance InfluxDBInstance) (*InfluxDBManager, error) {
-	client := influxdb2.NewClient(instance.URL, instance.Token)
+// createHTTPClientWithPool creates an HTTP client with configured connection pooling
+func createHTTPClientWithPool(config *Config) *http.Client {
+	// Create custom transport with connection pooling settings
+	transport := &http.Transport{
+		MaxIdleConns:        100, // Default
+		MaxIdleConnsPerHost: 10,  // Default
+		MaxConnsPerHost:     0,   // Unlimited by default
+		IdleConnTimeout:     90 * time.Second,
+		// Enable connection reuse
+		DisableKeepAlives: false,
+	}
+
+	// Apply custom configuration if provided
+	if config.InfluxMaxIdleConns > 0 {
+		transport.MaxIdleConns = config.InfluxMaxIdleConns
+	}
+	if config.InfluxMaxIdleConnsPerHost > 0 {
+		transport.MaxIdleConnsPerHost = config.InfluxMaxIdleConnsPerHost
+	}
+	if config.InfluxMaxConnsPerHost > 0 {
+		transport.MaxConnsPerHost = config.InfluxMaxConnsPerHost
+	}
+	if config.InfluxIdleConnTimeout > 0 {
+		transport.IdleConnTimeout = time.Duration(config.InfluxIdleConnTimeout) * time.Second
+	}
+
+	logger.Debug("InfluxDB connection pool settings: MaxIdleConns=%d, MaxIdleConnsPerHost=%d, MaxConnsPerHost=%d, IdleConnTimeout=%v",
+		transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost, transport.IdleConnTimeout)
+
+	return &http.Client{
+		Transport: transport,
+	}
+}
+
+func NewInfluxDBManager(instance InfluxDBInstance, config *Config) (*InfluxDBManager, error) {
+	// Create HTTP client with connection pooling
+	httpClient := createHTTPClientWithPool(config)
+
+	// Create InfluxDB client with custom HTTP client
+	client := influxdb2.NewClientWithOptions(
+		instance.URL,
+		instance.Token,
+		influxdb2.DefaultOptions().SetHTTPClient(httpClient),
+	)
 	writeAPI := client.WriteAPIBlocking(instance.Org, instance.Bucket)
 
 	return &InfluxDBManager{
@@ -1535,7 +1582,7 @@ func main() {
 			Bucket:   config.InfluxBucket,
 			Priority: 0,
 		}
-		manager, err := NewInfluxDBManager(instance)
+		manager, err := NewInfluxDBManager(instance, &config)
 		if err != nil {
 			log.Fatalf("Failed to create InfluxDB manager: %v", err)
 		}
@@ -1556,7 +1603,7 @@ func main() {
 		}
 
 		for _, instance := range instances {
-			manager, err := NewInfluxDBManager(instance)
+			manager, err := NewInfluxDBManager(instance, &config)
 			if err != nil {
 				logger.Warn("Failed to create InfluxDB manager for %s: %v", instance.URL, err)
 				continue
