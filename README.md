@@ -164,6 +164,24 @@ The application writes data to InfluxDB with the following schema:
 - `today_runtime_hours`: Runtime today in hours
 - `month_runtime_hours`: Runtime this month in hours
 
+## Visualization with Grafana
+
+A pre-built Grafana dashboard is included for visualizing your energy data. The dashboard provides:
+
+- Real-time power consumption monitoring
+- Daily and monthly energy usage tracking
+- Runtime statistics and trends
+- Multi-plug comparison and distribution
+- Historical data visualization
+
+### Quick Setup
+
+1. Import `grafana-dashboard.json` into your Grafana instance
+2. Configure your InfluxDB data source
+3. Update the bucket name if needed
+
+For detailed setup instructions, see [GRAFANA.md](GRAFANA.md).
+
 ## Example Flux Queries
 
 ### Current power consumption:
