@@ -18,7 +18,7 @@ A Go application that collects power consumption data from TP-Link Tapo smart pl
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.24 or later
 - InfluxDB 2.x instance
 - TP-Link Tapo smart plugs with energy monitoring (P110, P115, etc.)
 - Tapo account credentials
